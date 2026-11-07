@@ -1,1837 +1,1693 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { EXRLoader } from 'three/examples/jsm/loaders/EXRLoader.js'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import GUI from 'lil-gui'
 
 const CONFIG = {
-    waterColor: 0x0b5a78,
-    fogDensity: 0.014,
-    floorY: -10,
-    waterTop: 8,
-    currentStrength: 1,
-    godRayIntensity: 0.6,
-    causticStrength: 0.55,
-
-    boundsXZ: 20,
-
-    fishCount: 48,
-    minSpeed: 1.2,
-    maxSpeed: 3.5,
-    maxForce: 5,
-    perception: 5.0,
-    separationDist: 1.6,
-
-    wSeparation: 2.5,
-    wAlignment: 1.0,
-    wCohesion: 0.8,
-    wFood: 3.5,
-
-    foodFallSpeed: 0.9,
-    foodSeekRadius: 30,
-    foodEatDistance: 0.6,
-    foodLifetimeOnFloor: 8,
-
-    kelpBushCount: 28,
-    giantKelpCount: 9,
-    rockClusterCount: 9,
-    rocksPerCluster: 4,
-    extraCoralClusters: 18,
-    outcropCount: 5,
-    bubbleCount: 70,
+    fogColor: 0x3b2c60,
+    fogDensity: 0.016,
+    moonLightIntensity: 3.0,
+    hemiIntensity: 1.1,
+    groundSize: 260,
+    groundSegments: 160,
+    crystalGlow: 2.8,
+    roverSpeed: 6,
+    roverTurnSpeed: 1.8,
+    followRover: true,
+    meteorGravity: 6,
+    meteorFlightTime: 2.2,
+    maxMeteors: 12,
+    shipScale: 2.5,
+    sparkCount: 120,
 }
 
 const canvas = document.querySelector('canvas.webgl')
 const sizes = { width: window.innerWidth, height: window.innerHeight }
+const pixelRatio = Math.min(window.devicePixelRatio, 2)
 
+let seed = 7
+function seededRandom() {
+    seed = (seed * 9301 + 49297) % 233280
+    return seed / 233280
+}
+
+
+// Положення на карті
+const SHIP_YAW = 0.45
+function shipPoint(along, side) {
+    return {
+        x: Math.cos(SHIP_YAW) * along + Math.sin(SHIP_YAW) * side,
+        z: -Math.sin(SHIP_YAW) * along + Math.cos(SHIP_YAW) * side,
+    }
+}
+
+function distanceToShipAxis(x, z) {
+    const s = CONFIG.shipScale
+    const dirX = Math.cos(SHIP_YAW)
+    const dirZ = -Math.sin(SHIP_YAW)
+    const along = THREE.MathUtils.clamp(x * dirX + z * dirZ, -7 * s, 8 * s)
+    return Math.hypot(x - dirX * along, z - dirZ * along)
+}
+
+function isNearShip(x, z) {
+    return distanceToShipAxis(x, z) < 4.8 * CONFIG.shipScale
+}
+
+function randomSpot(minRadius, maxRadius) {
+    let x, z
+    do {
+        const angle = seededRandom() * Math.PI * 2
+        const radius = minRadius + seededRandom() * (maxRadius - minRadius)
+        x = Math.cos(angle) * radius
+        z = Math.sin(angle) * radius
+    } while (isNearShip(x, z))
+    return { x, z }
+}
+
+// Сцена, камера, рендерер
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(CONFIG.waterColor)
-scene.fog = new THREE.FogExp2(CONFIG.waterColor, CONFIG.fogDensity)
+scene.fog = new THREE.FogExp2(CONFIG.fogColor, CONFIG.fogDensity)
 
-const camera = new THREE.PerspectiveCamera(60, sizes.width / sizes.height, 0.1, 200)
-camera.position.set(0, 1, 17)
+const camera = new THREE.PerspectiveCamera(45, sizes.width / sizes.height, 0.1, 500)
+camera.position.set(10.5, 2.5, 28)
 scene.add(camera)
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
 renderer.setSize(sizes.width, sizes.height)
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+renderer.setPixelRatio(pixelRatio)
 renderer.toneMapping = THREE.ACESFilmicToneMapping
-renderer.toneMappingExposure = 0.95
+renderer.toneMappingExposure = 1.1
+renderer.shadowMap.enabled = true
+renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
 const controls = new OrbitControls(camera, canvas)
 controls.enableDamping = true
-controls.target.set(0, -3, 0)
-controls.minDistance = 5
-controls.maxDistance = 45
-controls.maxPolarAngle = Math.PI * 0.53
+controls.target.set(13.5, 2, 10)
+controls.minDistance = 6
+controls.maxDistance = 90
+controls.maxPolarAngle = Math.PI * 0.49
 
-
-// Освітлення
-const hemiLight = new THREE.HemisphereLight(0x8eeeff, 0x1d7f94, 2.1)
-scene.add(hemiLight)
-
-const ambientLight = new THREE.AmbientLight(0x3aa7c4, 0.4)
-scene.add(ambientLight)
-
-const sunLight = new THREE.DirectionalLight(0xe2fcff, 2.5)
-sunLight.position.set(6, 20, 8)
-scene.add(sunLight)
-
-const rimLight = new THREE.DirectionalLight(0x5b94ff, 0.9)
-rimLight.position.set(-10, 6, -12)
-scene.add(rimLight)
-
-const skyUniforms = {
-    uTop: { value: new THREE.Color(0x62dcec) },
-    uHorizon: { value: new THREE.Color(CONFIG.waterColor) },
-    uBottom: { value: new THREE.Color(0x04263a) },
-}
-const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(150, 32, 16),
-    new THREE.ShaderMaterial({
-        uniforms: skyUniforms,
-        side: THREE.BackSide,
-        depthWrite: false,
-        fog: false,
-        toneMapped: false,
-        vertexShader: `
-            varying vec3 vDir;
-            void main() {
-                vDir = position;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform vec3 uTop;
-            uniform vec3 uHorizon;
-            uniform vec3 uBottom;
-            varying vec3 vDir;
-            void main() {
-                float h = normalize(vDir).y;
-                vec3 col = h > 0.0
-                    ? mix(uHorizon, uTop, pow(h, 0.55))
-                    : mix(uHorizon, uBottom, pow(-h, 0.7));
-                gl_FragColor = linearToOutputTexel(vec4(col, 1.0));
-            }
-        `,
-    })
-)
-sky.renderOrder = -10
-sky.frustumCulled = false
-scene.add(sky)
-
-
-// Свічення медуз і планктону
-function createGlowTexture() {
+// Небо та місяці
+function createSkyTexture() {
     const c = document.createElement('canvas')
-    c.width = c.height = 128
-    const g = c.getContext('2d')
-    const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64)
-    grad.addColorStop(0, 'rgba(255,255,255,1)')
-    grad.addColorStop(0.3, 'rgba(255,255,255,0.35)')
-    grad.addColorStop(1, 'rgba(255,255,255,0)')
-    g.fillStyle = grad
-    g.fillRect(0, 0, 128, 128)
-    const tex = new THREE.CanvasTexture(c)
-    tex.colorSpace = THREE.SRGBColorSpace
-    return tex
-}
-const glowTexture = createGlowTexture()
+    c.width = 512
+    c.height = 1024
+    const ctx = c.getContext('2d')
 
+    const gradient = ctx.createLinearGradient(0, 0, 0, c.height)
+    gradient.addColorStop(0.0, '#0e0b26')
+    gradient.addColorStop(0.3, '#201a48')
+    gradient.addColorStop(0.47, '#5f4d86')
+    gradient.addColorStop(0.5, '#7a5f96')
+    gradient.addColorStop(0.52, '#3b2c60')
+    gradient.addColorStop(1.0, '#3b2c60')
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, c.width, c.height)
 
-// Каустика
-const causticUniforms = {
-    uTime: { value: 0 },
-    uStrength: { value: CONFIG.causticStrength },
-}
-
-const CAUSTIC_GLSL = `
-    float causticPattern(vec2 p, float t) {
-        vec2 i = p;
-        float c = 1.0;
-        float inten = 0.005;
-        for (int n = 0; n < 4; n++) {
-            float tt = t * (1.0 - (3.5 / float(n + 1)));
-            i = p + vec2(cos(tt - i.x) + sin(tt + i.y), sin(tt - i.y) + cos(tt + i.x));
-            c += 1.0 / length(vec2(p.x / (sin(i.x + tt) / inten), p.y / (cos(i.y + tt) / inten)));
-        }
-        c /= 4.0;
-        c = 1.17 - pow(c, 1.4);
-        return pow(abs(c), 8.0);
+    for (let i = 0; i < 300; i++) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.2 + Math.random() * 0.6})`
+        ctx.fillRect(Math.random() * c.width, Math.random() * c.height * 0.42, 1.5, 1.5)
     }
-`
 
-function addCaustics(material, k = 1) {
-    material.onBeforeCompile = (shader) => {
-        shader.uniforms.uCTime = causticUniforms.uTime
-        shader.uniforms.uCStrength = causticUniforms.uStrength
-        shader.uniforms.uCK = { value: k }
-
-        shader.vertexShader = shader.vertexShader
-            .replace('#include <common>', '#include <common>\nvarying vec3 vCausticPos;')
-            .replace(
-                '#include <begin_vertex>',
-                '#include <begin_vertex>\nvCausticPos = (modelMatrix * vec4(transformed, 1.0)).xyz;'
-            )
-
-        shader.fragmentShader = shader.fragmentShader
-            .replace(
-                '#include <common>',
-                '#include <common>\nvarying vec3 vCausticPos;\nuniform float uCTime;\nuniform float uCStrength;\nuniform float uCK;\n' + CAUSTIC_GLSL
-            )
-            .replace(
-                '#include <emissivemap_fragment>',
-                `#include <emissivemap_fragment>
-                {
-                    vec2 cp = mod(vCausticPos.xz * 0.63 + vec2(vCausticPos.y * 0.25, 0.0), 6.28318) - 250.0;
-                    float cv = causticPattern(cp, uCTime * 0.55);
-                    float up = clamp(inverseTransformDirection(normal, viewMatrix).y * 0.5 + 0.5, 0.0, 1.0);
-                    float depthFade = clamp((vCausticPos.y + 14.0) / 22.0, 0.35, 1.0);
-                    totalEmissiveRadiance += diffuseColor.rgb * vec3(0.75, 1.0, 1.0) * cv * uCStrength * uCK * mix(0.25, 1.0, up) * depthFade * 0.9;
-                }`
-            )
-    }
-}
-
-
-// Планктон
-const plankton = (() => {
-    const count = 700
-    const range = 38
-    const positions = new Float32Array(count * 3)
-    const seeds = new Float32Array(count)
-    for (let i = 0; i < count; i++) {
-        positions[i * 3] = THREE.MathUtils.randFloatSpread(range * 2)
-        positions[i * 3 + 1] = THREE.MathUtils.randFloat(CONFIG.floorY + 1, CONFIG.waterTop)
-        positions[i * 3 + 2] = THREE.MathUtils.randFloatSpread(range * 2)
-        seeds[i] = Math.random()
-    }
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-    const points = new THREE.Points(geometry, new THREE.PointsMaterial({
-        map: glowTexture,
-        color: 0xbff4ff,
-        size: 0.22,
-        sizeAttenuation: true,
-        transparent: true,
-        opacity: 0.55,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-    }))
-    points.frustumCulled = false
-    scene.add(points)
-
-    return {
-        update(dt, t) {
-            for (let i = 0; i < count; i++) {
-                const seed = seeds[i]
-                positions[i * 3] += Math.sin(t * 0.2 + seed * 20) * dt * 0.18
-                positions[i * 3 + 1] += dt * (0.04 + seed * 0.08)
-                positions[i * 3 + 2] += Math.cos(t * 0.17 + seed * 15) * dt * 0.18
-                if (positions[i * 3 + 1] > CONFIG.waterTop) positions[i * 3 + 1] = CONFIG.floorY + 1
-            }
-            geometry.attributes.position.needsUpdate = true
-        },
-    }
-})()
-
-
-//Дно
-const CHEST_X = 6
-const CHEST_Z = 4
-
-function heightAt(x, z) {
-    const distToChest = Math.hypot(x - CHEST_X, z - CHEST_Z)
-    const chestFlatten = THREE.MathUtils.clamp((distToChest - 1.5) / 4.5, 0, 1)
-
-    const dunes = Math.sin(x * 0.11 + Math.sin(z * 0.07) * 1.5) * Math.cos(z * 0.09) * 2.0
-    const ridges = Math.sin(x * 0.22 + z * 0.18) * 0.7
-    const ripples = Math.sin(x * 0.5 + z * 0.4) * 0.15
-
-    return (dunes + ridges + ripples) * chestFlatten
-}
-
-function groundY(x, z) {
-    return CONFIG.floorY + heightAt(x, z)
-}
-
-const floorGeometry = new THREE.PlaneGeometry(160, 160, 150, 150)
-floorGeometry.rotateX(-Math.PI / 2)
-
-const textureLoader = new THREE.TextureLoader()
-const exrLoader = new EXRLoader()
-
-function loadPbrTexture(loader, path, { color = false, repeat = 1 } = {}) {
-    const texture = loader.load(path, undefined, undefined, (error) => {
-        console.error(`Не вдалося завантажити текстуру ${path}:`, error)
-    })
-    texture.wrapS = THREE.RepeatWrapping
-    texture.wrapT = THREE.RepeatWrapping
-    texture.repeat.set(repeat, repeat)
-    if (color) texture.colorSpace = THREE.SRGBColorSpace
+    const texture = new THREE.CanvasTexture(c)
+    texture.colorSpace = THREE.SRGBColorSpace
     return texture
 }
 
-function loadPbrMaps(directory, name, roughnessExtension = 'jpg', repeat = 1) {
-    const texturePath = `${directory}/textures/${name}`
-    return {
-        map: loadPbrTexture(
-            textureLoader,
-            `${texturePath}_diff_1k.jpg`,
-            { color: true, repeat }
-        ),
-        normalMap: loadPbrTexture(
-            exrLoader,
-            `${texturePath}_nor_gl_1k.exr`,
-            { repeat }
-        ),
-        roughnessMap: loadPbrTexture(
-            roughnessExtension === 'exr' ? exrLoader : textureLoader,
-            `${texturePath}_rough_1k.${roughnessExtension}`,
-            { repeat }
-        ),
-    }
-}
+const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(300, 32, 32),
+    new THREE.MeshBasicMaterial({ map: createSkyTexture(), side: THREE.BackSide, fog: false })
+)
+scene.add(sky)
 
-const floorPositions = floorGeometry.attributes.position
-const floorColors = new Float32Array(floorPositions.count * 3)
-const sandLow = new THREE.Color(0x9e8352)
-const sandHigh = new THREE.Color(0xe0cd9d)
-const sandTmp = new THREE.Color()
+const bigMoon = new THREE.Mesh(
+    new THREE.SphereGeometry(16, 32, 32),
+    new THREE.MeshBasicMaterial({ color: 0xe8b496, fog: false })
+)
+bigMoon.position.set(60, 70, -200)
+scene.add(bigMoon)
 
-for (let i = 0; i < floorPositions.count; i++) {
-    const x = floorPositions.getX(i)
-    const z = floorPositions.getZ(i)
-    const h = heightAt(x, z)
-    floorPositions.setY(i, CONFIG.floorY + h)
+const smallMoon = new THREE.Mesh(
+    new THREE.SphereGeometry(6, 32, 32),
+    new THREE.MeshBasicMaterial({ color: 0xc9bcd8, fog: false })
+)
+smallMoon.position.set(-10, 45, -210)
+scene.add(smallMoon)
 
-    const t = THREE.MathUtils.clamp((h + 2.5) / 5, 0, 1)
-    sandTmp.lerpColors(sandLow, sandHigh, t)
-    floorColors[i * 3] = sandTmp.r
-    floorColors[i * 3 + 1] = sandTmp.g
-    floorColors[i * 3 + 2] = sandTmp.b
-}
-floorGeometry.setAttribute('color', new THREE.BufferAttribute(floorColors, 3))
-floorGeometry.computeVertexNormals()
+// Освітлення
+const pmrem = new THREE.PMREMGenerator(renderer)
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+scene.environmentIntensity = 0.15
+scene.add(new THREE.HemisphereLight(0x6a73d6, 0x2a1a40, CONFIG.hemiIntensity))
 
-const floorMaterial = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    vertexColors: true,
-    roughness: 1,
-    metalness: 0,
-    ...loadPbrMaps('./sand/aerial_beach_01_1k.blend', 'aerial_beach_01', 'jpg', 12),
+const moonLight = new THREE.DirectionalLight(0x9fb4ff, CONFIG.moonLightIntensity)
+moonLight.castShadow = true
+moonLight.shadow.mapSize.set(2048, 2048)
+moonLight.shadow.radius = 4
+moonLight.shadow.bias = -0.0005
+moonLight.shadow.normalBias = 0.03
+moonLight.shadow.camera.left = -45
+moonLight.shadow.camera.right = 45
+moonLight.shadow.camera.top = 45
+moonLight.shadow.camera.bottom = -45
+moonLight.shadow.camera.near = 1
+moonLight.shadow.camera.far = 160
+scene.add(moonLight, moonLight.target)
+
+const moonLightOffset = new THREE.Vector3(30, 40, -35)
+
+const fillLight = new THREE.DirectionalLight(0x4a5cc0, 0.5)
+fillLight.position.set(-20, 15, 30)
+scene.add(fillLight)
+
+const composerTarget = new THREE.WebGLRenderTarget(sizes.width, sizes.height, {
+    type: THREE.HalfFloatType,
+    samples: 4,
 })
-addCaustics(floorMaterial)
-const floor = new THREE.Mesh(floorGeometry, floorMaterial)
-scene.add(floor)
+const composer = new EffectComposer(renderer, composerTarget)
+composer.setPixelRatio(pixelRatio)
+composer.setSize(sizes.width, sizes.height)
+composer.addPass(new RenderPass(scene, camera))
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(sizes.width, sizes.height), 0.35, 0.5, 0.75))
+composer.addPass(new OutputPass())
 
-const SHIP = { x: -14, z: -13, scale: 2.2, rotY: -0.35 }
 
-function nearShip(x, z, margin = 2) {
-    const dx = x - SHIP.x
-    const dz = z - SHIP.z
-    const c = Math.cos(SHIP.rotY)
-    const s = Math.sin(SHIP.rotY)
-    const lx = dx * c - dz * s
-    const lz = dx * s + dz * c
-    return (
-        lx > -6 * SHIP.scale - margin &&
-        lx < 7 * SHIP.scale + margin &&
-        Math.abs(lz) < 2 * SHIP.scale + margin
-    )
+// Рельєф
+function craterShape(x, z, centerX, centerZ, radius, depth) {
+    const k = Math.hypot(x - centerX, z - centerZ) / radius
+    if (k < 1) return -depth * (1 - k * k)
+    if (k < 1.4) return depth * 0.3 * Math.sin(((k - 1) / 0.4) * Math.PI)
+    return 0
 }
 
-function nearChest(x, z, radius = 4) {
-    return Math.hypot(x - CHEST_X, z - CHEST_Z) < radius
+// Положення станції
+const stationX = 72
+const stationZ = -10
+const STATION_FLAT_RADIUS = 27
+const STATION_BLEND_RADIUS = 20
+
+function getRawGroundHeight(x, z) {
+    let h = Math.sin(x * 0.06) * Math.cos(z * 0.05) * 3.0
+
+    h += Math.sin(x * 0.15 + z * 0.1) * 0.7
+    h += Math.cos(z * 0.21 - x * 0.13) * 0.4
+
+    h += craterShape(x, z, 0, 0, 30, 4)
+    h += craterShape(x, z, -40, 28, 9, 2)
+    h += craterShape(x, z, 35, -30, 12, 2.5)
+
+    h += Math.max(0, Math.hypot(x, z) - 60) * 0.06
+    return h
 }
 
-function randomSpot(range, margin = 2, chestRadius = 4) {
-    let x = 0, z = 0
-    for (let tries = 0; tries < 60; tries++) {
-        x = THREE.MathUtils.randFloatSpread(range * 2)
-        z = THREE.MathUtils.randFloatSpread(range * 2)
-        if (!nearShip(x, z, margin) && !nearChest(x, z, chestRadius)) break
+const STATION_PAD_Y = getRawGroundHeight(stationX, stationZ)
+
+function getGroundHeight(x, z) {
+    const raw = getRawGroundHeight(x, z)
+    const d = Math.hypot(x - stationX, z - stationZ)
+    if (d >= STATION_FLAT_RADIUS + STATION_BLEND_RADIUS) return raw
+
+    let t = Math.max(0, Math.min(1, (d - STATION_FLAT_RADIUS) / STATION_BLEND_RADIUS))
+    t = t * t * (3 - 2 * t)
+    return STATION_PAD_Y + (raw - STATION_PAD_Y) * t
+}
+
+const groundGeo = new THREE.PlaneGeometry(CONFIG.groundSize, CONFIG.groundSize, CONFIG.groundSegments, CONFIG.groundSegments)
+groundGeo.rotateX(-Math.PI / 2)
+
+const groundPos = groundGeo.attributes.position
+
+for (let i = 0; i < groundPos.count; i++) {
+    const h = getGroundHeight(groundPos.getX(i), groundPos.getZ(i))
+    groundPos.setY(i, h)
+}
+groundGeo.computeVertexNormals()
+
+const groundMaterial = new THREE.MeshStandardMaterial({
+    color: 0x5a3b7e,
+    vertexColors: false,
+    roughness: 0.95,
+    metalness: 0.05,
+})
+
+const textureLoader = new THREE.TextureLoader()
+const maxAnisotropy = renderer.capabilities.getMaxAnisotropy()
+
+function loadPBRMaterial(pathPrefix, options = {}) {
+    const repeatX = options.repeatX ?? 1
+    const repeatY = options.repeatY ?? 1
+
+    function loadMap(suffixes, isColorTexture) {
+        if (!suffixes) return null
+
+        const texture = new THREE.Texture()
+        texture.wrapS = THREE.RepeatWrapping
+        texture.wrapT = THREE.RepeatWrapping
+        texture.repeat.set(repeatX, repeatY)
+        texture.anisotropy = maxAnisotropy
+        if (isColorTexture) texture.colorSpace = THREE.SRGBColorSpace
+
+        function tryLoad(index) {
+            if (index >= suffixes.length) {
+                console.warn(`PBR-текстуру не знайдено: ${pathPrefix}${suffixes[0]}`)
+                return
+            }
+
+            textureLoader.load(
+                `${pathPrefix}${suffixes[index]}`,
+                (loadedTexture) => {
+                    texture.image = loadedTexture.image
+                    texture.needsUpdate = true
+                },
+                undefined,
+                () => tryLoad(index + 1)
+            )
+        }
+
+        tryLoad(0)
+        return texture
     }
-    return { x, z }
-}
 
-
-function createChain({ segments, segLength, radius, material, direction = 1 }) {
-    const geometry = new THREE.CylinderGeometry(0.8, 1, segLength, 6, 1)
-    geometry.translate(0, (direction * segLength) / 2, 0)
-
-    const root = new THREE.Group()
-    const segs = []
-    let parent = root
-
-    for (let i = 0; i < segments; i++) {
-        const seg = new THREE.Group()
-        seg.position.y = i === 0 ? 0 : direction * segLength
-        parent.add(seg)
-
-        const mesh = new THREE.Mesh(geometry, material)
-        const taper = 1 - (i / segments) * 0.65
-        mesh.scale.set(radius * taper, 1, radius * taper)
-        seg.add(mesh)
-
-        segs.push(seg)
-        parent = seg
+    return {
+        map: loadMap(['Color.jpg'], true),
+        normalMap: loadMap(['NormalGL.jpg', 'Normal.jpg'], false),
+        roughnessMap: loadMap(['Roughness.jpg'], false),
+        metalnessMap: loadMap(options.metalness === false ? null : ['Metalness.jpg', 'Metallic.jpg'], false),
     }
+}
 
-    return { root, segs }
+Object.assign(
+    groundMaterial,
+    loadPBRMaterial(`${import.meta.env.BASE_URL}Earth/Ground069_1K-JPG/Ground069_1K-JPG_`, {
+        repeatX: 24,
+        repeatY: 24,
+    })
+)
+groundMaterial.needsUpdate = true
+
+const ground = new THREE.Mesh(groundGeo, groundMaterial)
+ground.receiveShadow = true
+scene.add(ground)
+
+const mountainPBR = loadPBRMaterial(`${import.meta.env.BASE_URL}Earth/Rock032_1K-JPG/Rock032_1K-JPG_`, {
+    repeatX: 6,
+    repeatY: 12,
+    metalness: false,
+})
+const mountainMat = new THREE.MeshStandardMaterial({
+    ...mountainPBR,
+    color: 0x251f3d,
+    roughness: 0.95,
+    flatShading: true,
+})
+const mountainData = [
+    [-90, -100, 22, 50],
+    [-45, -118, 16, 38],
+    [25, -120, 24, 70],
+    [70, -100, 18, 44],
+    [105, -70, 20, 40],
+    [-110, -60, 18, 36],
+    [0, -125, 20, 45],
+]
+mountainData.forEach(([x, z, radius, height]) => {
+    const mountain = new THREE.Mesh(new THREE.ConeGeometry(radius, height, 5, 1), mountainMat)
+    mountain.position.set(x, height / 2 - 4, z)
+    mountain.rotation.y = seededRandom() * Math.PI
+    mountain.receiveShadow = true
+    mountain.castShadow = true
+    scene.add(mountain)
+})
+
+function addPart(geometry, material, x, y, z, parent) {
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.position.set(x, y, z)
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    parent.add(mesh)
+    return mesh
 }
 
 
-//Водорості
-const kelpMaterials = [
-    new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 0.7,
-        ...loadPbrMaps('./algae/concrete_moss_1k.blend', 'concrete_moss', 'exr'),
-    }),
-    new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 0.7,
-        ...loadPbrMaps('./algae/moss_wood_1k.blend', 'moss_wood'),
-    }),
+const obstacles = []
+const ROVER_RADIUS = 0.5
+
+function addObstacle(x, z, radius) {
+    obstacles.push({ pos: new THREE.Vector3(x, 0, z), radius })
+}
+
+// Скелі
+const ROCK_COUNT = 90
+const rockPBR = loadPBRMaterial(`${import.meta.env.BASE_URL}Earth/Rock032_1K-JPG/Rock032_1K-JPG_`, {
+    repeatX: 1,
+    repeatY: 1,
+    metalness: false,
+})
+const rockMaterial = new THREE.MeshStandardMaterial({
+    map: rockPBR.map,
+    normalMap: rockPBR.normalMap,
+    roughnessMap: rockPBR.roughnessMap,
+    color: 0x5a5268,
+    roughness: 0.85,
+    flatShading: true,
+})
+const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), rockMaterial, ROCK_COUNT)
+rocks.castShadow = true
+rocks.receiveShadow = true
+rocks.frustumCulled = false
+
+const dummy = new THREE.Object3D()
+const rockSpots = []
+
+for (let i = 0; i < ROCK_COUNT; i++) {
+    const isBig = i < 14
+    const spot = isBig ? randomSpot(22, 85) : randomSpot(8, 70)
+    const size = isBig ? 2 + seededRandom() * 2.5 : 0.3 + seededRandom() * 0.8
+
+    dummy.scale.set(size * (0.8 + seededRandom() * 0.6), size * (0.6 + seededRandom() * 0.6), size * (0.8 + seededRandom() * 0.6))
+    dummy.rotation.set(seededRandom() * 3, seededRandom() * 3, seededRandom() * 3)
+    dummy.position.set(spot.x, getGroundHeight(spot.x, spot.z) + dummy.scale.y * 0.3, spot.z)
+    dummy.updateMatrix()
+    rocks.setMatrixAt(i, dummy.matrix)
+    rockSpots.push({ x: spot.x, z: spot.z, size: Math.max(dummy.scale.x, dummy.scale.z), isBig })
+
+    if (isBig) addObstacle(spot.x, spot.z, Math.max(dummy.scale.x, dummy.scale.z) * 0.8)
+
+    const shade = 0.7 + seededRandom() * 0.6
+    rocks.setColorAt(i, new THREE.Color(shade, shade, shade * 1.1))
+}
+scene.add(rocks)
+
+// Трава
+const bladeMaterial = new THREE.MeshStandardMaterial({
+    color: 0x00a896,
+    emissive: 0x004d40,
+    emissiveIntensity: 0.08,
+    roughness: 0.8,
+    side: THREE.DoubleSide,
+})
+
+const GRASS_CELL = 0.55
+const GRASS_LIMIT = 90
+const GRASS_MIN_SCALE = 0.8
+const GRASS_MAX_SCALE = 1.1
+const GRASS_STATION_CLEAR = 27
+const GRASS_STATION_FADE = 8
+const GRASS_ANIMATE_RADIUS = 60
+
+for (let c = 0; c < 1200; c++) {
+    randomSpot(2, 105)
+    for (let b = 0; b < 12 * 4; b++) seededRandom()
+}
+
+function makeRandom(startSeed) {
+    let s = startSeed
+    return () => {
+        s = (s * 9301 + 49297) % 233280
+        return s / 233280
+    }
+}
+const grassRandom = makeRandom(20261104)
+
+const TUFT_VARIANTS = [
+    { bladeCount: 4, height: 0.34, width: 0.15, spread: 0.09, bend: 0.12 },
+    { bladeCount: 6, height: 0.43, width: 0.12, spread: 0.12, bend: 0.18 },
+    { bladeCount: 5, height: 0.3, width: 0.2, spread: 0.1, bend: 0.08 },
+    { bladeCount: 7, height: 0.38, width: 0.1, spread: 0.17, bend: 0.22 },
 ]
 
-kelpMaterials.forEach((m) => addCaustics(m))
+function buildTuftGeometry(variant) {
+    const positions = []
+    const uvs = []
+    const indices = []
+    const sections = [0, 0.24, 0.5, 0.76, 1]
 
-const kelpStrands = []
+    for (let blade = 0; blade < variant.bladeCount; blade++) {
+        const variation = Math.sin(blade * 12.9898 + variant.height * 73.1)
+        const angle = (blade / variant.bladeCount) * Math.PI * 2 + variation * 0.16
+        const dirX = Math.cos(angle)
+        const dirZ = Math.sin(angle)
+        const sideX = -dirZ
+        const sideZ = dirX
+        const leafHeight = variant.height * (0.82 + 0.18 * (variation + 1) * 0.5)
+        const leafWidth = variant.width * (0.82 + 0.18 * (Math.cos(blade * 5.31 + variant.width * 19) + 1) * 0.5)
+        const start = positions.length / 3
 
-function createKelpBush(x, z, giant = false) {
-    const bush = new THREE.Group()
-    bush.position.set(x, groundY(x, z) - 0.1, z)
+        for (let section = 0; section < sections.length; section++) {
+            const t = sections[section]
+            const widthProfile = section === sections.length - 1
+                ? 0
+                : Math.sin(Math.PI * (0.12 + t * 0.78)) * (1 - t * 0.35)
+            const width = leafWidth * widthProfile * 0.5
+            const curve = variant.spread * t + variant.bend * t * t
+            const sideCurve = Math.sin(Math.PI * t) * variant.width * 0.16 * variation
+            const centerX = dirX * curve + sideX * sideCurve
+            const centerZ = dirZ * curve + sideZ * sideCurve
+            const y = leafHeight * t
 
-    const strands = giant ? THREE.MathUtils.randInt(1, 2) : THREE.MathUtils.randInt(2, 4)
-    for (let s = 0; s < strands; s++) {
-        const chain = createChain(
-            giant
-                ? {
-                      segments: THREE.MathUtils.randInt(16, 22),
-                      segLength: THREE.MathUtils.randFloat(0.8, 1.0),
-                      radius: THREE.MathUtils.randFloat(0.16, 0.22),
-                      material: kelpMaterials[Math.floor(Math.random() * kelpMaterials.length)],
-                  }
-                : {
-                      segments: THREE.MathUtils.randInt(6, 9),
-                      segLength: THREE.MathUtils.randFloat(0.6, 0.9),
-                      radius: THREE.MathUtils.randFloat(0.1, 0.16),
-                      material: kelpMaterials[Math.floor(Math.random() * kelpMaterials.length)],
-                  }
-        )
-        const angle = Math.random() * Math.PI * 2
-        chain.root.position.set(Math.cos(angle) * 0.3, 0, Math.sin(angle) * 0.3)
-        bush.add(chain.root)
+            positions.push(
+                centerX - sideX * width, y, centerZ - sideZ * width,
+                centerX + sideX * width, y, centerZ + sideZ * width
+            )
+            uvs.push(0, t, 1, t)
+        }
 
-        kelpStrands.push({
-            segs: chain.segs,
-            phase: Math.random() * Math.PI * 2,
-            amp: giant ? 0.05 : 0.1,
-            lean: giant ? 0.02 : 0.05,
-            speed: giant ? 0.6 : 0.9,
-        })
-    }
-
-    scene.add(bush)
-}
-
-for (let i = 0; i < CONFIG.kelpBushCount; i++) {
-    const { x, z } = randomSpot(50, 2, 4)
-    createKelpBush(x, z, false)
-}
-for (let i = 0; i < CONFIG.giantKelpCount; i++) {
-    const { x, z } = randomSpot(34, 3, 5)
-    createKelpBush(x, z, true)
-}
-
-function updateKelp(t) {
-    const s = CONFIG.currentStrength
-    for (const strand of kelpStrands) {
-        for (let i = 0; i < strand.segs.length; i++) {
-            const seg = strand.segs[i]
-            seg.rotation.z = -strand.lean * s + Math.sin(t * strand.speed + strand.phase + i * 0.55) * strand.amp * s
-            seg.rotation.x = Math.sin(t * strand.speed * 0.78 + strand.phase * 1.7 + i * 0.45) * strand.amp * 0.7 * s
+        for (let section = 0; section < sections.length - 1; section++) {
+            const left = start + section * 2
+            const right = left + 1
+            const nextLeft = left + 2
+            const nextRight = left + 3
+            indices.push(left, right, nextLeft, right, nextRight, nextLeft)
         }
     }
-}
 
-const rockMaterials = [
-    new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 1,
-        flatShading: true,
-        ...loadPbrMaps('./stone/stone1_1k.blend', 'marble_cliff_05', 'exr'),
-    }),
-    new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 1,
-        flatShading: true,
-        ...loadPbrMaps('./stone/seaside_rock_1k.blend', 'seaside_rock', 'exr'),
-    }),
-]
-
-rockMaterials.forEach((m) => addCaustics(m))
-
-function createRockGeometry(radius, detail = 0) {
-    const geometry = Math.random() < 0.5
-        ? new THREE.DodecahedronGeometry(radius, detail)
-        : new THREE.IcosahedronGeometry(radius, detail)
-
-    const pos = geometry.attributes.position
-    const seed = Math.random() * 100
-    for (let i = 0; i < pos.count; i++) {
-        const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i)
-        const k = 1 + 0.18 * Math.sin((x * 3.1) / radius + seed) * Math.cos((y * 2.7) / radius + seed * 1.3)
-        pos.setXYZ(i, x * k, y * k, z * k)
-    }
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+    geometry.setIndex(indices)
     geometry.computeVertexNormals()
     return geometry
 }
 
-function createRock(x, z, radius) {
-    const mesh = new THREE.Mesh(
-        createRockGeometry(radius, radius > 1 ? 1 : 0),
-        rockMaterials[Math.floor(Math.random() * rockMaterials.length)]
-    )
-    const squash = THREE.MathUtils.randFloat(0.55, 0.9)
-    mesh.scale.set(THREE.MathUtils.randFloat(0.9, 1.2), squash, THREE.MathUtils.randFloat(0.8, 1.1))
-    mesh.rotation.set(Math.random() * 0.4, Math.random() * Math.PI * 2, Math.random() * 0.4)
-    mesh.position.set(x, groundY(x, z) + radius * squash * 0.25, z)
+const tuftsByVariant = TUFT_VARIANTS.map(() => [])
+for (let gx = -GRASS_LIMIT; gx < GRASS_LIMIT; gx += GRASS_CELL) {
+    for (let gz = -GRASS_LIMIT; gz < GRASS_LIMIT; gz += GRASS_CELL) {
+        const x = gx + grassRandom() * GRASS_CELL
+        const z = gz + grassRandom() * GRASS_CELL
+        if (Math.hypot(x, z) > GRASS_LIMIT) continue
+        if (distanceToShipAxis(x, z) < 3) continue
+        const dStation = Math.hypot(x - stationX, z - stationZ)
+        if (dStation < GRASS_STATION_CLEAR) continue
+        if (dStation < GRASS_STATION_CLEAR + GRASS_STATION_FADE) {
+            if (grassRandom() > (dStation - GRASS_STATION_CLEAR) / GRASS_STATION_FADE) continue
+        }
+        const variantHash = (Math.imul(Math.floor(gx / GRASS_CELL), 73856093) ^
+            Math.imul(Math.floor(gz / GRASS_CELL), 19349663)) >>> 0
+        const variantIndex = variantHash % TUFT_VARIANTS.length
+        tuftsByVariant[variantIndex].push({
+            x,
+            y: getGroundHeight(x, z),
+            z,
+            scale: GRASS_MIN_SCALE + grassRandom() * (GRASS_MAX_SCALE - GRASS_MIN_SCALE),
+            yaw: grassRandom() * Math.PI * 2,
+            tiltX: (grassRandom() - 0.5) * 0.15,
+            tiltZ: (grassRandom() - 0.5) * 0.15,
+            phase: grassRandom() * Math.PI * 2,
+            shade: 0.88 + grassRandom() * 0.24,
+        })
+    }
+}
+
+const grassMeshes = tuftsByVariant.map((tufts, variantIndex) => {
+    const mesh = new THREE.InstancedMesh(buildTuftGeometry(TUFT_VARIANTS[variantIndex]), bladeMaterial, tufts.length)
+    mesh.frustumCulled = false
+    mesh.castShadow = false
+    const color = new THREE.Color()
+    tufts.forEach((tuft, i) => {
+        color.setHSL(0.49 + variantIndex * 0.009, 0.42, 0.76 * tuft.shade)
+        mesh.setColorAt(i, color)
+    })
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
     scene.add(mesh)
     return mesh
-}
+})
 
-const rockLocations = []
+let grassFrame = 0
+function updateGrass(elapsed) {
+    grassFrame++
+    const first = grassFrame === 1
+    if (!first && grassFrame % 2 === 0) return
 
-function createRockCluster(cx, cz) {
-    for (let i = 0; i < CONFIG.rocksPerCluster; i++) {
-        if (i === 0) {
-            const radius = THREE.MathUtils.randFloat(1.1, 1.8)
-            createRock(cx, cz, radius)
-            rockLocations.push({ x: cx, z: cz, radius })
-        } else {
-            const angle = Math.random() * Math.PI * 2
-            const dist = THREE.MathUtils.randFloat(1.4, 3.2)
-            const x = cx + Math.cos(angle) * dist
-            const z = cz + Math.sin(angle) * dist
-            const radius = THREE.MathUtils.randFloat(0.35, 0.9)
-            createRock(x, z, radius)
-            rockLocations.push({ x, z, radius })
+    const cx = controls.target.x
+    const cz = controls.target.z
+    const maxDist2 = GRASS_ANIMATE_RADIUS * GRASS_ANIMATE_RADIUS
+
+    tuftsByVariant.forEach((tufts, variantIndex) => {
+        const mesh = grassMeshes[variantIndex]
+        for (let i = 0; i < tufts.length; i++) {
+            const tuft = tufts[i]
+            if (!first) {
+                const dx = tuft.x - cx
+                const dz = tuft.z - cz
+                if (dx * dx + dz * dz > maxDist2) continue
+            }
+            const sway = Math.sin(elapsed * 1.5 + tuft.phase) * 0.09
+
+            dummy.position.set(tuft.x, tuft.y, tuft.z)
+            dummy.rotation.set(tuft.tiltX + sway, tuft.yaw, tuft.tiltZ + sway * 0.6)
+            dummy.scale.setScalar(tuft.scale)
+            dummy.updateMatrix()
+            mesh.setMatrixAt(i, dummy.matrix)
         }
-    }
-}
-
-function createOutcrop(x, z) {
-    const group = new THREE.Group()
-    group.position.set(x, groundY(x, z) - 0.6, z)
-    const levels = [{ r: 2.4, y: 0.8 }, { r: 1.8, y: 2.5 }, { r: 1.25, y: 4.0 }, { r: 0.8, y: 5.1 }]
-    const mat = rockMaterials[Math.floor(Math.random() * rockMaterials.length)]
-
-    for (const level of levels) {
-        const mesh = new THREE.Mesh(createRockGeometry(level.r, 1), mat)
-        mesh.scale.y = THREE.MathUtils.randFloat(1.1, 1.5)
-        mesh.position.set(THREE.MathUtils.randFloatSpread(0.5), level.y, THREE.MathUtils.randFloatSpread(0.5))
-        mesh.rotation.y = Math.random() * Math.PI * 2
-        group.add(mesh)
-    }
-    group.scale.setScalar(THREE.MathUtils.randFloat(0.8, 1.35))
-    scene.add(group)
-    rockLocations.push({ x, z, radius: 3.5 })
-}
-
-// Корали
-const coralColors = [0xff3d8b, 0xff7a1a, 0x19e6d0, 0xff5a3d, 0xb04dff, 0xffd23d]
-const spongeNormalMap = loadPbrTexture(
-    textureLoader,
-    './corals/Sponge001_1K-JPG/Sponge001_1K-JPG_NormalGL.jpg',
-    { repeat: 0.7 }
-)
-const spongeRoughnessMap = loadPbrTexture(
-    textureLoader,
-    './corals/Sponge001_1K-JPG/Sponge001_1K-JPG_Roughness.jpg',
-    { repeat: 0.7 }
-)
-spongeNormalMap.repeat.set(0.7, 0.7)
-spongeRoughnessMap.repeat.set(0.7, 0.7)
-const coralMaterials = coralColors.map(color => {
-    const material = new THREE.MeshStandardMaterial({
-        color,
-        emissive: color,
-        emissiveIntensity: 0.03,
-        roughness: 0.9,
-        normalMap: spongeNormalMap,
-        roughnessMap: spongeRoughnessMap,
-    })
-    material.normalScale.set(8, 8)
-    return material
-})
-const coralTubeMaterials = coralMaterials.map(m => {
-    const clone = m.clone()
-    clone.side = THREE.DoubleSide
-    clone.roughness = 0.9
-    clone.normalScale.set(8, 8)
-    return clone
-})
-
-coralMaterials.forEach((m) => addCaustics(m, 0.3))
-coralTubeMaterials.forEach((m) => addCaustics(m, 0.3))
-
-const branchGeometry = new THREE.CylinderGeometry(0.05, 0.12, 1, 6)
-branchGeometry.translate(0, 0.5, 0)
-const brainGeometry = new THREE.IcosahedronGeometry(1, 2)
-const tubeGeometry = new THREE.CylinderGeometry(0.11, 0.15, 1, 8, 1, true)
-tubeGeometry.translate(0, 0.5, 0)
-
-function createBranchCoral(materialIndex) {
-    const group = new THREE.Group()
-    const material = coralMaterials[materialIndex]
-    const branches = THREE.MathUtils.randInt(4, 7)
-
-    for (let k = 0; k < branches; k++) {
-        const pivot = new THREE.Group()
-        pivot.rotation.order = 'YXZ'
-        pivot.rotation.set(THREE.MathUtils.randFloat(0.2, 0.7), Math.random() * Math.PI * 2, 0)
-
-        const len = THREE.MathUtils.randFloat(0.7, 1.5)
-        const branch = new THREE.Mesh(branchGeometry, material)
-        branch.scale.set(1, len, 1)
-        pivot.add(branch)
-
-        const sub = new THREE.Group()
-        sub.position.y = len * 0.6
-        sub.rotation.z = (Math.random() < 0.5 ? -1 : 1) * THREE.MathUtils.randFloat(0.5, 0.9)
-        const subLen = len * 0.45
-        const subBranch = new THREE.Mesh(branchGeometry, material)
-        subBranch.scale.set(0.7, subLen, 0.7)
-        sub.add(subBranch)
-
-        pivot.add(sub)
-        group.add(pivot)
-    }
-    return group
-}
-
-function createBrainCoral(materialIndex) {
-    const group = new THREE.Group()
-    const r = THREE.MathUtils.randFloat(0.2, 0.45)
-    const mesh = new THREE.Mesh(brainGeometry, coralMaterials[materialIndex])
-    mesh.scale.set(r, r * 0.65, r)
-    mesh.position.y = r * 0.1
-    group.add(mesh)
-
-    for (let k = 0; k < 2; k++) {
-        const small = new THREE.Mesh(brainGeometry, coralMaterials[materialIndex])
-        const sr = r * THREE.MathUtils.randFloat(0.4, 0.6)
-        small.scale.set(sr, sr * 0.7, sr)
-        small.position.set(THREE.MathUtils.randFloatSpread(r * 2), sr * 0.1, THREE.MathUtils.randFloatSpread(r * 2))
-        group.add(small)
-    }
-    return group
-}
-
-function createTubeCoral(materialIndex) {
-    const group = new THREE.Group()
-    const count = THREE.MathUtils.randInt(5, 8)
-    for (let k = 0; k < count; k++) {
-        const tube = new THREE.Mesh(tubeGeometry, coralTubeMaterials[materialIndex])
-        tube.scale.set(THREE.MathUtils.randFloat(0.8, 1.3), THREE.MathUtils.randFloat(0.4, 1.3), THREE.MathUtils.randFloat(0.8, 1.3))
-        tube.position.set(THREE.MathUtils.randFloatSpread(0.7), 0, THREE.MathUtils.randFloatSpread(0.7))
-        tube.rotation.set(THREE.MathUtils.randFloatSpread(0.3), 0, THREE.MathUtils.randFloatSpread(0.3))
-        group.add(tube)
-    }
-    return group
-}
-
-const coralBuilders = [createBranchCoral, createBranchCoral, createBrainCoral, createTubeCoral]
-
-function isNearRock(x, z) {
-    const coralClearance = 1.2
-    return rockLocations.some((rock) => {
-        const clearance = rock.radius * 1.2 + coralClearance
-        return Math.hypot(x - rock.x, z - rock.z) < clearance
+        mesh.instanceMatrix.needsUpdate = true
     })
 }
 
-function createCoralCluster(cx, cz, count = THREE.MathUtils.randInt(8, 14)) {
-    for (let i = 0; i < count; i++) {
-        for (let attempt = 0; attempt < 4; attempt++) {
-            const angle = Math.random() * Math.PI * 2
-            const dist = THREE.MathUtils.randFloat(2.0, 3.8)
-            const x = cx + Math.cos(angle) * dist
-            const z = cz + Math.sin(angle) * dist
-            if (nearShip(x, z, 1) || nearChest(x, z, 2.5) || isNearRock(x, z)) continue
+// Космічний корабель
+const textureBasePath = `${import.meta.env.BASE_URL}spaceship/`
+const hullMat = new THREE.MeshStandardMaterial({
+    ...loadPBRMaterial(`${textureBasePath}Metal061B_1K-JPG/Metal061B_1K-JPG_`, { repeatX: 2, repeatY: 2 }),
+    metalness: 0.8,
+    roughness: 0.3,
+})
+const darkMetalMat = new THREE.MeshStandardMaterial({
+    ...loadPBRMaterial(`${textureBasePath}Metal063_1K-JPG/Metal063_1K-JPG_`, { repeatX: 2, repeatY: 2 }),
+    metalness: 0.8,
+    roughness: 0.3,
+})
+const tealGlowMat = new THREE.MeshStandardMaterial({ color: 0x0a2a30, emissive: 0x2fe8ff, emissiveIntensity: 2 })
+const engineGlowMat = new THREE.MeshStandardMaterial({ color: 0x331100, emissive: 0xff7a2a, emissiveIntensity: 2.5 })
 
-            const build = coralBuilders[Math.floor(Math.random() * coralBuilders.length)]
-            const coral = build(Math.floor(Math.random() * coralMaterials.length))
-            coral.position.set(x, groundY(x, z) + 0.05, z)
-            coral.rotation.y = Math.random() * Math.PI * 2
-            coral.scale.setScalar(THREE.MathUtils.randFloat(0.7, 1.4))
-            scene.add(coral)
-            break
-        }
+const ship = new THREE.Group()
+scene.add(ship)
+
+addPart(new RoundedBoxGeometry(9, 2.6, 3.4, 4, 0.5), hullMat, 0, 0, 0, ship)
+
+const noseGeo = new THREE.ConeGeometry(1.7, 3.5, 6)
+noseGeo.rotateZ(-Math.PI / 2)
+const nose = addPart(noseGeo, hullMat, 6.25, 0, 0, ship)
+nose.scale.y = 0.8
+
+addPart(new THREE.BoxGeometry(0.25, 2.75, 3.5), darkMetalMat, -3, 0, 0, ship)
+addPart(new THREE.BoxGeometry(0.25, 2.75, 3.5), darkMetalMat, -0.5, 0, 0, ship)
+
+addPart(new THREE.BoxGeometry(1.4, 0.35, 3.5), tealGlowMat, 3, 0.7, 0, ship)
+addPart(new THREE.BoxGeometry(0.8, 0.08, 0.05), tealGlowMat, 1, -0.5, 1.72, ship)
+addPart(new THREE.BoxGeometry(0.8, 0.08, 0.05), tealGlowMat, -1.5, -0.5, 1.72, ship)
+addPart(new THREE.BoxGeometry(0.8, 0.08, 0.05), tealGlowMat, 1, -0.5, -1.72, ship)
+
+const wingLeft = addPart(new THREE.BoxGeometry(3.2, 0.15, 2.4), darkMetalMat, -0.5, -0.2, 2.8, ship)
+wingLeft.rotation.x = 0.2
+const wingRight = addPart(new THREE.BoxGeometry(2.2, 0.15, 1.8), darkMetalMat, -0.5, -0.2, -2.5, ship)
+wingRight.rotation.x = -0.5
+
+addPart(new THREE.BoxGeometry(2, 1.4, 0.15), darkMetalMat, -3, 1.9, 0, ship)
+
+const engineGeo = new THREE.CylinderGeometry(0.55, 0.7, 2, 16)
+engineGeo.rotateZ(Math.PI / 2)
+const nozzleGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.2, 16)
+nozzleGeo.rotateZ(Math.PI / 2)
+
+const nozzles = []
+const enginePositions = [
+    [-5.2, 0.6, -1.0],
+    [-5.2, 0.6, 1.0],
+    [-5.2, -0.6, 0],
+]
+enginePositions.forEach(([x, y, z]) => {
+    addPart(engineGeo, darkMetalMat, x, y, z, ship)
+    nozzles.push(addPart(nozzleGeo, engineGlowMat, x - 1.1, y, z, ship))
+})
+
+const shipLight = new THREE.PointLight(0x2fe8ff, 150, 40, 2)
+shipLight.position.set(3, 1.8, 0)
+ship.add(shipLight)
+
+ship.scale.setScalar(CONFIG.shipScale)
+
+ship.position.set(0, getGroundHeight(0, 0) + 1.2 * CONFIG.shipScale, 0)
+ship.rotation.set(0.08, SHIP_YAW, -0.22)
+ship.updateMatrixWorld(true)
+
+function addShipSphere(part, lx, ly, lz, radius) {
+    const p = part.localToWorld(new THREE.Vector3(lx, ly, lz))
+    addObstacle(p.x, p.z, radius)
+}
+
+{
+    const s = CONFIG.shipScale
+
+    const hullZ = 1.3
+    const sphereR = 1.0
+    const hullStations = 19
+    for (let i = 0; i < hullStations; i++) {
+        const x = -6.0 + (10.5 * i) / (hullStations - 1)
+        addShipSphere(ship, x, 0, hullZ, sphereR)
+        addShipSphere(ship, x, 0, -hullZ, sphereR)
+    }
+
+    for (const z of [-0.65, 0, 0.65]) addShipSphere(ship, -6.0, 0, z, sphereR)
+
+    addShipSphere(ship, 4.5, 0, 0, 1.2)
+    addShipSphere(ship, 5.2, 0, 0, 1.0)
+    addShipSphere(ship, 5.8, 0, 0, 0.8)
+    for (const [x, z] of [[4.8, 1.1], [5.3, 0.85]]) {
+        addShipSphere(ship, x, 0, z, 1.0)
+        addShipSphere(ship, x, 0, -z, 1.0)
+    }
+
+    for (const x of [-1.3, -0.45, 0.45, 1.3]) {
+        for (const z of [-0.85, 0, 0.85]) addShipSphere(wingLeft, x, 0, z, 1.2)
+    }
+
+    for (const x of [-0.7, 0, 0.7]) {
+        for (const z of [-0.5, 0.5]) addShipSphere(wingRight, x, 0, z, 1.2)
     }
 }
 
-const rockAnchors = [[-6, 6], [13, -5], [-19, 5], [3, -14], [19, 11], [-4, -3], [-14, 15], [9, -24], [24, 0]]
-const rockClusterCenters = []
-for (let i = 0; i < CONFIG.rockClusterCount; i++) {
-    const anchor = rockAnchors[i % rockAnchors.length]
-    const x = anchor[0] + THREE.MathUtils.randFloatSpread(3)
-    const z = anchor[1] + THREE.MathUtils.randFloatSpread(3)
-    createRockCluster(x, z)
-    rockClusterCenters.push({ x, z })
-}
+const sparkPositions = new Float32Array(CONFIG.sparkCount * 3)
+const sparkColors = new Float32Array(CONFIG.sparkCount * 3)
+const sparkVelocities = []
+const sparkLife = []
+const sparkMaxLife = []
 
-const outcropAnchors = [[-22, 4], [20, -12], [6, -26], [-14, 9], [26, 8]]
-const outcropCenters = []
-for (let i = 0; i < CONFIG.outcropCount; i++) {
-    const anchor = outcropAnchors[i % outcropAnchors.length]
-    const x = anchor[0] + THREE.MathUtils.randFloatSpread(2)
-    const z = anchor[1] + THREE.MathUtils.randFloatSpread(2)
-    createOutcrop(x, z)
-    outcropCenters.push({ x, z })
-}
+const exhaustDir = new THREE.Vector3(-1, 0, 0).applyQuaternion(ship.quaternion)
+const nozzleWorldPos = new THREE.Vector3()
 
-for (const { x, z } of rockClusterCenters) {
-    createCoralCluster(x + THREE.MathUtils.randFloatSpread(3), z + THREE.MathUtils.randFloatSpread(3))
-}
+function resetSpark(i) {
+    const nozzle = nozzles[Math.floor(Math.random() * nozzles.length)]
+    nozzle.getWorldPosition(nozzleWorldPos)
+    sparkPositions[i * 3] = nozzleWorldPos.x
+    sparkPositions[i * 3 + 1] = nozzleWorldPos.y
+    sparkPositions[i * 3 + 2] = nozzleWorldPos.z
 
-for (let i = 0; i < CONFIG.extraCoralClusters; i++) {
-    const { x, z } = randomSpot(30, 2, 3)
-    createCoralCluster(x, z)
-}
-
-for (const { x, z } of outcropCenters) {
-    createCoralCluster(x + 2.5, z + 1.5, THREE.MathUtils.randInt(8, 14))
-}
-
-for (let i = 0; i < 48; i++) {
-    const x = THREE.MathUtils.randFloatSpread(36)
-    const z = THREE.MathUtils.randFloat(-4, 24)
-    createCoralCluster(x, z, 1)
-}
-
-
-//Скриня зі скарбами
-const woodMaterial = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 0.85,
-    ...loadPbrMaps('./coffer/plank_flooring_04_1k.blend', 'plank_flooring_04', 'exr', 2),
-})
-
-function loadCofferMetalMaps(name, repeat = 2) {
-    const directory = `./coffer/${name}_1K-JPG/${name}_1K-JPG`
-    return {
-        map: loadPbrTexture(textureLoader, `${directory}_Color.jpg`, { color: true, repeat }),
-        normalMap: loadPbrTexture(textureLoader, `${directory}_NormalGL.jpg`, { repeat }),
-        roughnessMap: loadPbrTexture(textureLoader, `${directory}_Roughness.jpg`, { repeat }),
-        metalnessMap: loadPbrTexture(textureLoader, `${directory}_Metalness.jpg`, { repeat }),
-    }
-}
-
-const goldMaterial = new THREE.MeshStandardMaterial({
-    color: 0xffc83d,
-    metalness: 1,
-    roughness: 0.35,
-    emissive: 0x553800,
-    emissiveIntensity: 0.5,
-    ...loadCofferMetalMaps('Metal042A'),
-})
-const treasureMaterial = new THREE.MeshStandardMaterial({
-    color: 0xffd700,
-    metalness: 0.9,
-    roughness: 0.35,
-    emissive: 0x000000,
-    emissiveIntensity: 0.05,
-    ...loadCofferMetalMaps('Metal034', 3),
-})
-treasureMaterial.normalScale.set(2.5, 2.5)
-
-addCaustics(woodMaterial)
-
-function createTreasureChest() {
-    const chest = new THREE.Group()
-
-    const base = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.9, 1.1), woodMaterial)
-    base.position.y = 0.45
-    chest.add(base)
-
-    const bottomStripe = new THREE.Mesh(new THREE.BoxGeometry(1.86, 0.16, 1.16), goldMaterial)
-    bottomStripe.position.y = 0.08
-    chest.add(bottomStripe)
-
-    const rim = new THREE.Mesh(new THREE.BoxGeometry(1.86, 0.1, 1.16), goldMaterial)
-    rim.position.y = 0.87
-    chest.add(rim)
-
-    const lock = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.28, 0.08), goldMaterial)
-    lock.position.set(0, 0.75, 0.58)
-    chest.add(lock)
-
-    const lidPivot = new THREE.Group()
-    lidPivot.position.set(0, 0.9, -0.55)
-    lidPivot.rotation.x = -0.9
-    chest.add(lidPivot)
-
-    const lidGeometry = new THREE.CylinderGeometry(0.55, 0.55, 1.8, 20, 1, false, 0, Math.PI)
-    lidGeometry.rotateZ(Math.PI / 2)
-    const lidMat = woodMaterial.clone()
-    lidMat.side = THREE.DoubleSide
-    addCaustics(lidMat)
-    const lid = new THREE.Mesh(lidGeometry, lidMat)
-    lid.position.z = 0.55
-    lidPivot.add(lid)
-
-    const bandGeometry = new THREE.CylinderGeometry(0.57, 0.57, 0.14, 20, 1, false, 0, Math.PI)
-    bandGeometry.rotateZ(Math.PI / 2)
-    for (const x of [-0.55, 0.55]) {
-        const band = new THREE.Mesh(bandGeometry, goldMaterial)
-        band.position.set(x, 0, 0.55)
-        lidPivot.add(band)
-    }
-
-    const pile = new THREE.Mesh(
-        new THREE.SphereGeometry(0.7, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2),
-        treasureMaterial
+    const speed = (1 + Math.random() * 2) * CONFIG.shipScale
+    sparkVelocities[i].set(
+        exhaustDir.x * speed + (Math.random() - 0.5) * 1.6,
+        exhaustDir.y * speed + (Math.random() - 0.5) * 1.6,
+        exhaustDir.z * speed + (Math.random() - 0.5) * 1.6
     )
-    pile.scale.set(1.15, 0.4, 0.7)
-    pile.position.y = 0.92
-    chest.add(pile)
 
-    const coinGeometry = new THREE.CylinderGeometry(0.12, 0.12, 0.03, 12)
-    for (let i = 0; i < 7; i++) {
-        const coin = new THREE.Mesh(coinGeometry, treasureMaterial)
-        coin.position.set(
-            THREE.MathUtils.randFloatSpread(1.0),
-            1.05 + Math.random() * 0.1,
-            THREE.MathUtils.randFloatSpread(0.5)
-        )
-        coin.rotation.set(Math.random(), Math.random(), Math.random())
-        chest.add(coin)
-    }
-
-    const light = new THREE.PointLight(0xffc84a, 28, 16, 2)
-    light.position.set(0, 1.4, 0)
-    chest.add(light)
-
-    const glow = new THREE.Mesh(
-        new THREE.SphereGeometry(0.9, 20, 16),
-        new THREE.MeshBasicMaterial({
-            color: 0xffc84a, transparent: true, opacity: 0.15,
-            blending: THREE.AdditiveBlending, depthWrite: false
-        })
-    )
-    glow.position.set(0, 1.3, 0)
-    chest.add(glow)
-
-    chest.position.set(CHEST_X, groundY(CHEST_X, CHEST_Z) - 0.02, CHEST_Z)
-    chest.rotation.y = -0.6
-    scene.add(chest)
-
-    return { chest, light, glow }
+    sparkMaxLife[i] = 0.5 + Math.random()
+    sparkLife[i] = sparkMaxLife[i]
 }
 
-const { chest, light: chestLight, glow: chestGlow } = createTreasureChest()
-chest.updateMatrixWorld(true)
-const chestMouth = chest.localToWorld(new THREE.Vector3(0, 1.3, 0))
-
-function updateChest(t) {
-    const pulse = Math.sin(t * 2.2) * 0.5 + 0.5
-    chestLight.intensity = 20 + pulse * 12
-    chestGlow.material.opacity = 0.1 + pulse * 0.1
+for (let i = 0; i < CONFIG.sparkCount; i++) {
+    sparkVelocities.push(new THREE.Vector3())
+    resetSpark(i)
+    sparkLife[i] *= Math.random()
 }
 
+const sparksGeo = new THREE.BufferGeometry()
+sparksGeo.setAttribute('position', new THREE.BufferAttribute(sparkPositions, 3))
+sparksGeo.setAttribute('color', new THREE.BufferAttribute(sparkColors, 3))
 
-//Затонулий Корабель
-const shipSails = []
-
-function createShipwreck() {
-    const hullMaterial = new THREE.MeshStandardMaterial({
-        color: 0x30241b,
-        roughness: 1,
-        flatShading: true,
-        ...loadPbrMaps('./ship/rough_wood_1k.blend', 'rough_wood'),
-    })
-    const deckMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 1,
-        ...loadPbrMaps('./ship/plank_flooring_03_1k.blend', 'plank_flooring_03', 'exr', 2),
-    })
-    const mastMaps = loadPbrMaps('./ship/knotted_pine_bark_1k.blend', 'knotted_pine_bark', 'exr')
-    const plankMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 1,
-        ...mastMaps,
-    })
-    const mastMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 1,
-        ...mastMaps,
-    })
-    const barrelMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 1,
-        ...loadPbrMaps('./ship/wooden_gate_1k.blend', 'wooden_gate', 'exr'),
-    })
-    const sailMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 0.9,
-        side: THREE.DoubleSide,
+const sparks = new THREE.Points(
+    sparksGeo,
+    new THREE.PointsMaterial({
+        size: 0.18 * CONFIG.shipScale,
+        vertexColors: true,
+        blending: THREE.AdditiveBlending,
         transparent: true,
-        opacity: 0.85,
-        ...loadPbrMaps('./ship/curly_teddy_natural_1k.blend', 'curly_teddy_natural', 'exr'),
+        depthWrite: false,
+        fog: false,
     })
-    for (const m of [hullMaterial, deckMaterial, plankMaterial, mastMaterial, barrelMaterial]) addCaustics(m)
+)
+sparks.frustumCulled = false
+scene.add(sparks)
 
-    const sailShape = new THREE.Shape()
-    sailShape.moveTo(-1.7, 1.4)
-    sailShape.lineTo(1.7, 1.4)
-    sailShape.lineTo(1.6, -0.8)
-    sailShape.lineTo(1.1, -1.2)
-    sailShape.lineTo(0.7, -0.7)
-    sailShape.lineTo(0.2, -1.4)
-    sailShape.lineTo(-0.3, -0.9)
-    sailShape.lineTo(-0.8, -1.3)
-    sailShape.lineTo(-1.3, -0.7)
-    sailShape.lineTo(-1.7, -1.4)
-    sailShape.closePath()
+function updateSparks(dt) {
+    for (let i = 0; i < CONFIG.sparkCount; i++) {
+        sparkLife[i] -= dt
+        if (sparkLife[i] <= 0) resetSpark(i)
 
-    const holePath = new THREE.Path()
-    holePath.moveTo(0.3, 0.2)
-    holePath.lineTo(0.7, 0.4)
-    holePath.lineTo(0.9, 0.0)
-    holePath.lineTo(0.6, -0.4)
-    holePath.lineTo(0.1, -0.3)
-    holePath.lineTo(0.2, 0.1)
-    holePath.closePath()
-    sailShape.holes = [holePath]
-    const sailGeometry = new THREE.ExtrudeGeometry(sailShape, { depth: 0.01, bevelEnabled: false })
-    sailMaterial.normalScale.set(0.1, 0.1)
+        sparkVelocities[i].y -= 3 * dt
+        sparkPositions[i * 3] += sparkVelocities[i].x * dt
+        sparkPositions[i * 3 + 1] += sparkVelocities[i].y * dt
+        sparkPositions[i * 3 + 2] += sparkVelocities[i].z * dt
 
-    const ship = new THREE.Group()
+        const fade = sparkLife[i] / sparkMaxLife[i]
+        sparkColors[i * 3] = 1.0 * fade
+        sparkColors[i * 3 + 1] = 0.55 * fade
+        sparkColors[i * 3 + 2] = 0.15 * fade
+    }
+    sparksGeo.attributes.position.needsUpdate = true
+    sparksGeo.attributes.color.needsUpdate = true
+}
 
-    const outer = [[-6, -2], [3, -2], [5.2, -1.3], [4.5, -0.5], [6, 0.2], [4.6, 0.9], [5.2, 1.5], [3, 2], [-6, 2]]
-    const inner = [[-5.65, -1.65], [2.9, -1.65], [4.6, -1.0], [4.0, -0.4], [5.0, 0.2], [4.1, 0.6], [4.5, 1.1], [2.9, 1.65], [-5.65, 1.65]]
+// Кристали
+const crystalVertexShader = `
+    varying vec3 vNormal;
+    varying vec3 vWorldPos;
 
-    const hullShape = new THREE.Shape()
-    outer.forEach(([x, y], i) => (i === 0 ? hullShape.moveTo(x, y) : hullShape.lineTo(x, y)))
-    hullShape.closePath()
+    void main() {
+        vNormal = normalize(normalMatrix * normal);
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vWorldPos = worldPos.xyz;
+        gl_Position = projectionMatrix * viewMatrix * worldPos;
+    }
+`
 
-    const hole = new THREE.Path()
-    inner.forEach(([x, y], i) => (i === 0 ? hole.moveTo(x, y) : hole.lineTo(x, y)))
-    hole.closePath()
-    hullShape.holes.push(hole)
+const crystalFragmentShader = `
+    uniform float uTime;
+    uniform float uGlow;
+    uniform vec3 uColorA;
+    uniform vec3 uColorB;
+    varying vec3 vNormal;
+    varying vec3 vWorldPos;
 
-    const hullGeometry = new THREE.ExtrudeGeometry(hullShape, { depth: 3.8, bevelEnabled: false })
-    hullGeometry.rotateX(-Math.PI / 2)
-    hullGeometry.translate(0, -1, 0)
-    ship.add(new THREE.Mesh(hullGeometry, hullMaterial))
+    void main() {
+        float phase = vWorldPos.x * 0.15 + vWorldPos.z * 0.15;
+        float mixAmount = 0.5 + 0.5 * sin(uTime * 0.8 + phase);
+        vec3 color = mix(uColorA, uColorB, mixAmount);
 
-    const deckShape = new THREE.Shape()
-    inner.forEach(([x, y], i) => (i === 0 ? deckShape.moveTo(x, y) : deckShape.lineTo(x, y)))
-    deckShape.closePath()
-    const deckGeometry = new THREE.ExtrudeGeometry(deckShape, { depth: 0.25, bevelEnabled: false })
-    deckGeometry.rotateX(-Math.PI / 2)
-    deckGeometry.translate(0, 1.75, 0)
-    ship.add(new THREE.Mesh(deckGeometry, deckMaterial))
+        float pulse = 0.75 + 0.25 * sin(uTime * 2.0 + phase);
+        float rim = 1.0 - abs(normalize(vNormal).z);
 
-    const plankGeometry = new THREE.BoxGeometry(0.05, 0.02, 3.2)
-    for (let x = -5.2; x < 2.6; x += 0.8) {
-        const plank = new THREE.Mesh(plankGeometry, deckMaterial)
-        plank.position.set(x, 2.01, 0)
-        ship.add(plank)
+        float brightness = (0.5 + rim * 1.2) * pulse * uGlow;
+        gl_FragColor = vec4(color * brightness, 1.0);
+    }
+`
+
+const crystalUniforms = {
+    uTime: { value: 0 },
+    uGlow: { value: CONFIG.crystalGlow },
+}
+
+function createCrystalMaterial(colorA, colorB) {
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            uTime: crystalUniforms.uTime,
+            uGlow: crystalUniforms.uGlow,
+            uColorA: { value: new THREE.Color(colorA) },
+            uColorB: { value: new THREE.Color(colorB) },
+        },
+        vertexShader: crystalVertexShader,
+        fragmentShader: crystalFragmentShader,
+    })
+}
+
+const crystalMats = {
+    cyan: createCrystalMaterial(0x2fe8ff, 0x4a7bff),
+    purple: createCrystalMaterial(0xb34dff, 0xff4fd8),
+}
+
+const crystalGeo = new THREE.OctahedronGeometry(1, 0)
+
+function createCrystal(x, z, scale, tilt, material) {
+    const crystal = new THREE.Mesh(crystalGeo, material)
+    crystal.scale.set(scale * 0.45, scale * 1.8, scale * 0.45)
+    crystal.position.set(x, getGroundHeight(x, z) + scale, z)
+    crystal.rotation.z = tilt
+    crystal.rotation.y = seededRandom() * Math.PI
+    crystal.castShadow = true
+    scene.add(crystal)
+
+    addObstacle(x, z, THREE.MathUtils.clamp(scale * 0.45, 0.5, 0.8))
+}
+
+let crystalLightsLeft = 3
+const STATION_CRYSTAL_CLEARANCE = 31
+
+function createCrystalCluster(x, z, isCyan, size) {
+    const dxS = x - stationX
+    const dzS = z - stationZ
+    const distS = Math.hypot(dxS, dzS)
+    if (distS < STATION_CRYSTAL_CLEARANCE) {
+        const k = STATION_CRYSTAL_CLEARANCE / Math.max(distS, 0.001)
+        x = stationX + dxS * k
+        z = stationZ + dzS * k
     }
 
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(3, 1.6, 3.2), hullMaterial)
-    cabin.position.set(-4.3, 2.8, 0)
-    ship.add(cabin)
+    const material = isCyan ? crystalMats.cyan : crystalMats.purple
+    createCrystal(x, z, size, (seededRandom() - 0.5) * 0.4, material)
+    createCrystal(x + 0.7 * size, z + 0.3 * size, size * 0.6, 0.5, material)
+    createCrystal(x - 0.5 * size, z - 0.5 * size, size * 0.5, -0.6, material)
 
-    const hatch = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.3, 1.2), plankMaterial)
-    hatch.position.set(-0.8, 2.15, 0.1)
-    ship.add(hatch)
-
-    const barrelProfile = []
-    const barrelHeight = 0.75
-    barrelProfile.push(new THREE.Vector2(0, -barrelHeight / 2))
-    for (let i = 0; i <= 10; i++) {
-        const t = i / 10
-        const y = (t - 0.5) * barrelHeight
-        const radius = 0.35 + Math.sin(t * Math.PI) * 0.08
-        barrelProfile.push(new THREE.Vector2(radius, y))
+    if (crystalLightsLeft > 0) {
+        crystalLightsLeft--
+        const light = new THREE.PointLight(isCyan ? 0x2fe8ff : 0xb34dff, 45, 9, 2)
+        light.position.set(x, getGroundHeight(x, z) + 1.2, z)
+        scene.add(light)
     }
-    barrelProfile.push(new THREE.Vector2(0, barrelHeight / 2))
-    const barrelGeometry = new THREE.LatheGeometry(barrelProfile, 16)
-    const barrelA = new THREE.Mesh(barrelGeometry, barrelMaterial)
-    barrelA.position.set(0.9, 2.4, 0.95)
-    ship.add(barrelA)
+}
 
-    const barrelB = new THREE.Mesh(barrelGeometry, barrelMaterial)
-    barrelB.position.set(1.7, 2.2, -0.9)
-    barrelB.rotation.z = Math.PI / 2 - 0.2
-    ship.add(barrelB)
+const nearCrystalSpots = [
+    { along: -8, side: 16, isCyan: true, size: 1.4 },
+    { along: 6, side: -15, isCyan: false, size: 1.2 },
+    { along: 16, side: 14, isCyan: true, size: 1.1 },
+]
+nearCrystalSpots.forEach((c) => {
+    const p = shipPoint(c.along, c.side)
+    createCrystalCluster(p.x, p.z, c.isCyan, c.size)
+})
 
-    const ribGeometry = new THREE.BoxGeometry(0.14, 2.2, 0.14)
-    const ribs = [[3.2, 1.9, 0.2], [3.9, -1.9, -0.25], [4.6, 1.7, 0.3], [5.0, -1.2, -0.3]]
-    for (const [x, z, tiltX] of ribs) {
-        const rib = new THREE.Mesh(ribGeometry, mastMaterial)
-        rib.position.set(x, 3.6, z)
-        rib.rotation.x = tiltX
-        ship.add(rib)
+for (let i = 0; i < 22; i++) {
+    const spot = randomSpot(20, 85)
+    createCrystalCluster(spot.x, spot.z, i % 2 === 0, 0.8 + seededRandom() * 1.0)
+}
+
+// Ровер
+const roverBodyMat = new THREE.MeshStandardMaterial({
+    ...loadPBRMaterial(`${textureBasePath}Metal041A_1K-JPG/Metal041A_1K-JPG_`),
+    metalness: 0.5,
+    roughness: 0.4,
+})
+const roverDarkMat = new THREE.MeshStandardMaterial({
+    ...loadPBRMaterial(`${textureBasePath}Metal063_1K-JPG/Metal063_1K-JPG_`),
+    metalness: 0.8,
+    roughness: 0.3,
+})
+const wheelMat = new THREE.MeshStandardMaterial({
+    ...loadPBRMaterial(`${textureBasePath}Metal027_1K-JPG/Metal027_1K-JPG_`, { metalness: false }),
+    metalness: 0.5,
+    roughness: 0.7,
+})
+const lensMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xcfeaff, emissiveIntensity: 4 })
+
+const rover = new THREE.Group()
+rover.rotation.order = 'YZX'
+scene.add(rover)
+
+addPart(new RoundedBoxGeometry(1.6, 0.45, 1.1, 4, 0.1), roverBodyMat, 0, 0.55, 0, rover)
+addPart(new RoundedBoxGeometry(0.8, 0.35, 0.8, 4, 0.08), roverDarkMat, -0.2, 0.95, 0, rover)
+addPart(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 8), roverDarkMat, -0.5, 1.3, 0.25, rover)
+
+// Фара
+const lens = new THREE.Mesh(new THREE.SphereGeometry(0.13, 16, 16), lensMat)
+lens.position.set(0.85, 0.7, 0)
+rover.add(lens)
+
+const headlight = new THREE.SpotLight(0xcfeaff, 250, 45, 0.5, 0.6, 2)
+headlight.position.set(0.9, 0.7, 0)
+headlight.castShadow = true
+headlight.shadow.mapSize.set(1024, 1024)
+headlight.shadow.bias = -0.0005
+rover.add(headlight)
+
+headlight.target.position.set(10, 0, 0)
+rover.add(headlight.target)
+
+// Колеса
+const wheelGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.25, 20)
+wheelGeo.rotateX(Math.PI / 2)
+const wheels = []
+for (const wx of [-0.55, 0.55]) {
+    for (const wz of [-0.62, 0.62]) {
+        wheels.push(addPart(wheelGeo, wheelMat, wx, 0.3, wz, rover))
+    }
+}
+
+// Керування ровером
+const keyMap = {
+    KeyW: 'forward',
+    ArrowUp: 'forward',
+    KeyS: 'backward',
+    ArrowDown: 'backward',
+    KeyA: 'left',
+    ArrowLeft: 'left',
+    KeyD: 'right',
+    ArrowRight: 'right',
+}
+const keys = { forward: false, backward: false, left: false, right: false }
+
+window.addEventListener('keydown', (e) => {
+    const action = keyMap[e.code]
+    if (!action) return
+    e.preventDefault()
+    keys[action] = true
+})
+
+window.addEventListener('keyup', (e) => {
+    const action = keyMap[e.code]
+    if (action) keys[action] = false
+})
+
+window.addEventListener('blur', () => {
+    for (const action in keys) keys[action] = false
+})
+
+let roverHeading = 2.9
+let roverSpeedNow = 0
+rover.position.set(14, getGroundHeight(14, 14), 14)
+
+const MAP_LIMIT = 90
+const currentPos = new THREE.Vector3()
+const nextPos = new THREE.Vector3()
+
+function isBlocked(from, to) {
+    for (const obstacle of obstacles) {
+        const minDistance = ROVER_RADIUS + obstacle.radius
+        const distNext = to.distanceTo(obstacle.pos)
+        if (distNext < minDistance && distNext < from.distanceTo(obstacle.pos)) {
+            return true
+        }
+    }
+    return false
+}
+
+function updateRover(dt) {
+    if (keys.left) roverHeading += CONFIG.roverTurnSpeed * dt
+    if (keys.right) roverHeading -= CONFIG.roverTurnSpeed * dt
+
+    let targetSpeed = 0
+    if (keys.forward) targetSpeed += CONFIG.roverSpeed
+    if (keys.backward) targetSpeed -= CONFIG.roverSpeed * 0.6
+
+    roverSpeedNow += (targetSpeed - roverSpeedNow) * Math.min(1, 4 * dt)
+
+    const dirX = Math.cos(roverHeading)
+    const dirZ = -Math.sin(roverHeading)
+
+    currentPos.set(rover.position.x, 0, rover.position.z)
+    nextPos.set(
+        THREE.MathUtils.clamp(rover.position.x + dirX * roverSpeedNow * dt, -MAP_LIMIT, MAP_LIMIT),
+        0,
+        THREE.MathUtils.clamp(rover.position.z + dirZ * roverSpeedNow * dt, -MAP_LIMIT, MAP_LIMIT)
+    )
+
+    if (isBlocked(currentPos, nextPos)) {
+        roverSpeedNow = 0
+    } else {
+        rover.position.x = nextPos.x
+        rover.position.z = nextPos.z
     }
 
-    const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.16, 2.6, 6), mastMaterial)
-    bowsprit.rotation.z = -Math.PI / 2 + 0.5
-    bowsprit.position.set(5.4, 2.7, 0.2)
-    ship.add(bowsprit)
+    const x = rover.position.x
+    const z = rover.position.z
+    const rightX = Math.sin(roverHeading)
+    const rightZ = Math.cos(roverHeading)
 
-    const masts = [
-        { x: -2.5, h: 6, tilt: 0.05, sail: false },
-        { x: 1.5, h: 7.5, tilt: -0.08, sail: true },
-        { x: 4.2, h: 3.2, tilt: -0.55, sail: false },
-    ]
-    for (const { x, h, tilt, sail } of masts) {
-        const mastGeometry = new THREE.CylinderGeometry(0.12, 0.17, h, 6)
-        mastGeometry.translate(0, h / 2, 0)
-        const mast = new THREE.Mesh(mastGeometry, mastMaterial)
-        mast.position.set(x, 1.95, 0)
-        mast.rotation.z = tilt
-        ship.add(mast)
+    const hFront = getGroundHeight(x + dirX * 0.8, z + dirZ * 0.8)
+    const hBack = getGroundHeight(x - dirX * 0.8, z - dirZ * 0.8)
+    const hRight = getGroundHeight(x + rightX * 0.6, z + rightZ * 0.6)
+    const hLeft = getGroundHeight(x - rightX * 0.6, z - rightZ * 0.6)
 
-        const yard = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 4.5), mastMaterial)
-        yard.position.set(0, h * 0.75, 0)
-        mast.add(yard)
+    rover.position.y = (hFront + hBack + hRight + hLeft) / 4
 
-        if (sail) {
-            const cloth = new THREE.Mesh(sailGeometry, sailMaterial)
-            cloth.rotation.y = Math.PI / 2
-            cloth.position.set(0.05, h * 0.75 - 1.5, 0)
-            mast.add(cloth)
-            shipSails.push(cloth)
+    const pitch = Math.atan2(hFront - hBack, 1.6)
+    const roll = -Math.atan2(hRight - hLeft, 1.2)
+    rover.rotation.set(roll, roverHeading, pitch)
+
+    wheels.forEach((wheel) => {
+        wheel.rotation.z -= (roverSpeedNow * dt) / 0.3
+    })
+}
+
+const previousRoverPos = rover.position.clone()
+
+function updateCameraFollow() {
+    const delta = rover.position.clone().sub(previousRoverPos)
+    previousRoverPos.copy(rover.position)
+
+    if (CONFIG.followRover) {
+        camera.position.add(delta)
+        controls.target.add(delta)
+    }
+}
+
+function updateMoonLight() {
+    moonLight.target.position.copy(rover.position)
+    moonLight.position.copy(rover.position).add(moonLightOffset)
+}
+
+
+// Пил з-під коліс
+const ROVER_DUST_COUNT = 150
+const ROVER_DUST_SPAWN_RATE = 70
+const ROVER_DUST_BASE_SIZE = 0.22
+const ROVER_DUST_GROWTH = 3.2
+const ROVER_DUST_WHEEL_X = 0.55
+const ROVER_DUST_WHEEL_Z = 0.62
+
+const roverDustPositions = new Float32Array(ROVER_DUST_COUNT * 3)
+const roverDustColors = new Float32Array(ROVER_DUST_COUNT * 3)
+const roverDustAlphas = new Float32Array(ROVER_DUST_COUNT)
+const roverDustSizes = new Float32Array(ROVER_DUST_COUNT)
+const roverDustLife = new Float32Array(ROVER_DUST_COUNT)
+const roverDustMaxLife = new Float32Array(ROVER_DUST_COUNT)
+const roverDustVelocities = []
+
+{
+    const grayViolet = new THREE.Color(0x9a86b8)
+    const teal = new THREE.Color(0x6fd3d0)
+    const tmpColor = new THREE.Color()
+    for (let i = 0; i < ROVER_DUST_COUNT; i++) {
+        roverDustVelocities.push(new THREE.Vector3())
+        tmpColor.copy(grayViolet).lerp(teal, Math.random())
+        roverDustColors[i * 3] = tmpColor.r
+        roverDustColors[i * 3 + 1] = tmpColor.g
+        roverDustColors[i * 3 + 2] = tmpColor.b
+        roverDustMaxLife[i] = 1
+    }
+}
+
+const roverDustGeo = new THREE.BufferGeometry()
+roverDustGeo.setAttribute('position', new THREE.BufferAttribute(roverDustPositions, 3).setUsage(THREE.DynamicDrawUsage))
+roverDustGeo.setAttribute('aColor', new THREE.BufferAttribute(roverDustColors, 3))
+roverDustGeo.setAttribute('aAlpha', new THREE.BufferAttribute(roverDustAlphas, 1).setUsage(THREE.DynamicDrawUsage))
+roverDustGeo.setAttribute('aSize', new THREE.BufferAttribute(roverDustSizes, 1).setUsage(THREE.DynamicDrawUsage))
+
+const roverDustMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+        uOpacity: { value: 0.4 },
+        uScale: { value: sizes.height * pixelRatio * 0.5 },
+    },
+    vertexShader: `
+        attribute vec3 aColor;
+        attribute float aAlpha;
+        attribute float aSize;
+        uniform float uScale;
+        varying vec3 vColor;
+        varying float vAlpha;
+
+        void main() {
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            vColor = aColor;
+            vAlpha = aAlpha;
+            gl_PointSize = aSize * uScale / -mvPosition.z;
+            gl_Position = projectionMatrix * mvPosition;
+        }
+    `,
+    fragmentShader: `
+        uniform float uOpacity;
+        varying vec3 vColor;
+        varying float vAlpha;
+
+        void main() {
+            float d = length(gl_PointCoord - vec2(0.5));
+            float soft = smoothstep(0.5, 0.0, d);
+            gl_FragColor = vec4(vColor, soft * vAlpha * uOpacity);
+        }
+    `,
+    transparent: true,
+    depthWrite: false,
+})
+
+const roverDust = new THREE.Points(roverDustGeo, roverDustMaterial)
+roverDust.frustumCulled = false
+scene.add(roverDust)
+
+let roverDustCursor = 0
+let roverDustSpawnAccum = 0
+let roverDustSideToggle = false
+const roverDustLocal = new THREE.Vector3()
+
+function spawnRoverDust(wheelLocalX, wheelLocalZ) {
+    const i = roverDustCursor
+    roverDustCursor = (roverDustCursor + 1) % ROVER_DUST_COUNT
+
+    roverDustLocal.set(wheelLocalX, 0.1, wheelLocalZ)
+    rover.localToWorld(roverDustLocal)
+
+    roverDustPositions[i * 3] = roverDustLocal.x + (Math.random() - 0.5) * 0.15
+    roverDustPositions[i * 3 + 1] = roverDustLocal.y
+    roverDustPositions[i * 3 + 2] = roverDustLocal.z + (Math.random() - 0.5) * 0.15
+
+    const dirX = Math.cos(roverHeading)
+    const dirZ = -Math.sin(roverHeading)
+    const rightX = Math.sin(roverHeading)
+    const rightZ = Math.cos(roverHeading)
+    const moveSign = Math.sign(roverSpeedNow)
+    const speedAbs = Math.abs(roverSpeedNow)
+
+    const side = Math.sign(wheelLocalZ) * (0.3 + Math.random() * 0.7) + (Math.random() - 0.5) * 0.6
+    roverDustVelocities[i].set(
+        -dirX * moveSign * speedAbs * 0.2 + rightX * side,
+        0.6 + Math.random() * 1.0,
+        -dirZ * moveSign * speedAbs * 0.2 + rightZ * side
+    )
+
+    roverDustMaxLife[i] = 0.8 + Math.random() * 0.7
+    roverDustLife[i] = roverDustMaxLife[i]
+}
+
+function updateRoverDust(dt) {
+    roverDustMaterial.uniforms.uScale.value = sizes.height * pixelRatio * 0.5
+
+    const speedAbs = Math.abs(roverSpeedNow)
+    if (speedAbs > 0.5) {
+        rover.updateMatrixWorld(true)
+        const speedRatio = Math.min(1, speedAbs / Math.max(CONFIG.roverSpeed, 1))
+        roverDustSpawnAccum += dt * ROVER_DUST_SPAWN_RATE * speedRatio
+
+        const rearX = -Math.sign(roverSpeedNow) * ROVER_DUST_WHEEL_X
+        while (roverDustSpawnAccum >= 1) {
+            roverDustSpawnAccum -= 1
+            roverDustSideToggle = !roverDustSideToggle
+            spawnRoverDust(rearX, roverDustSideToggle ? ROVER_DUST_WHEEL_Z : -ROVER_DUST_WHEEL_Z)
+        }
+    } else {
+        roverDustSpawnAccum = 0
+    }
+
+    const drag = Math.max(0, 1 - 1.8 * dt)
+    for (let i = 0; i < ROVER_DUST_COUNT; i++) {
+        if (roverDustLife[i] <= 0) {
+            roverDustAlphas[i] = 0
+            roverDustSizes[i] = 0
+            continue
+        }
+
+        roverDustLife[i] -= dt
+        if (roverDustLife[i] <= 0) {
+            roverDustAlphas[i] = 0
+            roverDustSizes[i] = 0
+            continue
+        }
+
+        const v = roverDustVelocities[i]
+        v.x *= drag
+        v.z *= drag
+        v.y = v.y * (1 - 0.8 * dt) + 0.3 * dt 
+
+        roverDustPositions[i * 3] += v.x * dt
+        roverDustPositions[i * 3 + 1] += v.y * dt
+        roverDustPositions[i * 3 + 2] += v.z * dt
+
+        const t = 1 - roverDustLife[i] / roverDustMaxLife[i]
+        const fadeIn = Math.min(1, t * 10)
+        const fadeOut = (1 - t) * (1 - t)
+        roverDustAlphas[i] = fadeIn * fadeOut
+        roverDustSizes[i] = ROVER_DUST_BASE_SIZE * (1 + t * ROVER_DUST_GROWTH)
+    }
+
+    roverDustGeo.attributes.position.needsUpdate = true
+    roverDustGeo.attributes.aAlpha.needsUpdate = true
+    roverDustGeo.attributes.aSize.needsUpdate = true
+}
+
+// Пил
+const FLOATING_DUST_COUNT = 600
+const FLOATING_DUST_AREA = { x: 120, y: 40, z: 120 }
+const FLOATING_DUST_CENTER_Y = 18
+
+const floatingDustBase = new Float32Array(FLOATING_DUST_COUNT * 3)
+const floatingDustPositions = new Float32Array(FLOATING_DUST_COUNT * 3)
+
+for (let i = 0; i < FLOATING_DUST_COUNT; i++) {
+    floatingDustBase[i * 3] = (Math.random() - 0.5) * FLOATING_DUST_AREA.x
+    floatingDustBase[i * 3 + 1] = FLOATING_DUST_CENTER_Y + (Math.random() - 0.5) * FLOATING_DUST_AREA.y
+    floatingDustBase[i * 3 + 2] = (Math.random() - 0.5) * FLOATING_DUST_AREA.z
+}
+floatingDustPositions.set(floatingDustBase)
+
+const floatingDustGeo = new THREE.BufferGeometry()
+floatingDustGeo.setAttribute('position', new THREE.BufferAttribute(floatingDustPositions, 3).setUsage(THREE.DynamicDrawUsage))
+
+const floatingDust = new THREE.Points(
+    floatingDustGeo,
+    new THREE.PointsMaterial({
+        color: 0x88e5ff,
+        size: 0.15,
+        transparent: true,
+        opacity: 0.35,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        fog: false,
+    })
+)
+floatingDust.frustumCulled = false
+scene.add(floatingDust)
+
+function updateFloatingDust(elapsed) {
+    for (let i = 0; i < FLOATING_DUST_COUNT; i++) {
+        const phase = elapsed * 0.5 + i
+        floatingDustPositions[i * 3] = floatingDustBase[i * 3] + Math.cos(phase) * 1.2
+        floatingDustPositions[i * 3 + 1] = floatingDustBase[i * 3 + 1] + Math.sin(phase) * 0.8
+    }
+    floatingDustGeo.attributes.position.needsUpdate = true
+}
+
+// Моноліт
+const MONOLITH_POS = { x: -35, z: -70 }
+const MONOLITH_YAW = Math.atan2(-MONOLITH_POS.x, -MONOLITH_POS.z)
+const MONOLITH_GLOW_IDLE = 0.1
+const MONOLITH_GLOW_ACTIVE = 3.5
+const MONOLITH_GLOW_RADIUS = 20
+const MONOLITH_BURY = 1.5
+
+function monolithLocalToWorld(lx, lz) {
+    const c = Math.cos(MONOLITH_YAW)
+    const s = Math.sin(MONOLITH_YAW)
+    return {
+        x: MONOLITH_POS.x + c * lx + s * lz,
+        z: MONOLITH_POS.z - s * lx + c * lz,
+    }
+}
+
+const monolithGlowMat = new THREE.MeshStandardMaterial({
+    color: 0x001122,
+    emissive: 0x00f0ff,
+    emissiveIntensity: MONOLITH_GLOW_IDLE,
+})
+
+const monolithGroup = new THREE.Group()
+monolithGroup.position.set(MONOLITH_POS.x, getGroundHeight(MONOLITH_POS.x, MONOLITH_POS.z), MONOLITH_POS.z)
+monolithGroup.rotation.y = MONOLITH_YAW
+scene.add(monolithGroup)
+
+function addGlowPart(geometry, x, y, z, parent) {
+    const glow = addPart(geometry, monolithGlowMat, x, y, z, parent)
+    glow.castShadow = false
+    glow.receiveShadow = false
+    return glow
+}
+
+function addMonolithColumn(localX, height, tilt) {
+    const column = addPart(
+        new THREE.BoxGeometry(1.6, height, 1.6),
+        darkMetalMat,
+        localX,
+        height / 2 - MONOLITH_BURY,
+        0,
+        monolithGroup
+    )
+    column.rotation.z = tilt
+
+    const stripGeo = new THREE.BoxGeometry(0.1, height * 0.8, 0.05)
+    for (const sx of [-0.45, 0.45]) {
+        for (const sz of [-1, 1]) {
+            addGlowPart(stripGeo, sx, 0, sz * 0.81, column)
         }
     }
 
-    ship.rotation.set(0.3, 0, -0.06)
-
-    const pivot = new THREE.Group()
-    pivot.add(ship)
-    pivot.rotation.y = SHIP.rotY
-    pivot.scale.setScalar(SHIP.scale)
-    pivot.position.set(SHIP.x, groundY(SHIP.x, SHIP.z) - 1.2, SHIP.z)
-    scene.add(pivot)
+    const ringGeo = new THREE.BoxGeometry(1.66, 0.1, 1.66)
+    for (const t of [-0.3, 0.05, 0.35]) {
+        addGlowPart(ringGeo, 0, t * height, 0, column)
+    }
+    return column
 }
 
-createShipwreck()
+// Дві колони
+addMonolithColumn(-3.4, 13, -0.05)
+addMonolithColumn(3.4, 9.5, 0.1)
 
+const lintel = addPart(new THREE.BoxGeometry(5.2, 1.3, 1.9), darkMetalMat, -1.1, 12.1, 0, monolithGroup)
+lintel.rotation.z = -0.12
+addGlowPart(new THREE.BoxGeometry(4.2, 0.08, 0.05), -1.1, 11.4, 0.96, monolithGroup).rotation.z = -0.12
 
-//  Промені світла
-const godRays = []
+const fallenLintel = addPart(new THREE.BoxGeometry(2.8, 1.2, 1.7), darkMetalMat, 5.2, 0.5, 1.6, monolithGroup)
+fallenLintel.rotation.set(0.1, 0.6, 0.3)
+const fallenTop = addPart(new THREE.BoxGeometry(1.5, 1.1, 1.5), darkMetalMat, 4.6, 0.3, -1.8, monolithGroup)
+fallenTop.rotation.set(0.3, 0.9, 0.2)
 
-const godRayVertexShader = `
-    varying vec2 vUv;
-    varying vec3 vN;
-    varying vec3 vV;
-    varying float vDist;
-    void main() {
-        vUv = uv;
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vN = normalize(normalMatrix * normal);
-        vV = normalize(-mv.xyz);
-        vDist = -mv.z;
-        gl_Position = projectionMatrix * mv;
+const rubbleGeo = new THREE.DodecahedronGeometry(1, 0)
+for (const [rx, rz, rs] of [[-5.6, 1.4, 0.7], [-4.4, -1.6, 0.5], [1.2, 1.8, 0.45], [-1.8, 2.4, 0.6]]) {
+    const rubble = addPart(rubbleGeo, rockMaterial, rx, 0.1, rz, monolithGroup)
+    rubble.scale.setScalar(rs)
+    rubble.rotation.set(seededRandom() * 3, seededRandom() * 3, seededRandom() * 3)
+}
+
+for (const [lx, lz, radius] of [[-3.4, 0, 1.3], [3.4, 0, 1.3], [5.2, 1.6, 1.2]]) {
+    const p = monolithLocalToWorld(lx, lz)
+    addObstacle(p.x, p.z, radius)
+}
+
+// Світлові смуги
+function updateMonolith(dt) {
+    const dx = rover.position.x - monolithGroup.position.x
+    const dz = rover.position.z - monolithGroup.position.z
+    const distance = Math.hypot(dx, dz)
+
+    const target = distance < MONOLITH_GLOW_RADIUS ? MONOLITH_GLOW_ACTIVE : MONOLITH_GLOW_IDLE
+    monolithGlowMat.emissiveIntensity = THREE.MathUtils.lerp(
+        monolithGlowMat.emissiveIntensity,
+        target,
+        1 - Math.exp(-3 * dt)
+    )
+}
+
+// Зламаний ровер
+const brokenRover = new THREE.Group()
+brokenRover.position.set(-25, getGroundHeight(-25, -58) + 0.3, -58)
+brokenRover.rotation.set(0.28, 1.1, -0.35)
+scene.add(brokenRover)
+
+addPart(
+    new RoundedBoxGeometry(2.2, 0.7, 1.4, 4, 0.12),
+    darkMetalMat,
+    0,
+    0.25,
+    0,
+    brokenRover
+)
+addPart(
+    new RoundedBoxGeometry(1.05, 0.5, 0.95, 4, 0.1),
+    darkMetalMat,
+    -0.15,
+    0.78,
+    0,
+    brokenRover
+)
+
+const brokenAntenna = addPart(
+    new THREE.CylinderGeometry(0.035, 0.055, 0.85, 8),
+    darkMetalMat,
+    -0.78,
+    0.82,
+    0.18,
+    brokenRover
+)
+brokenAntenna.rotation.set(0.25, 0, 0.55)
+
+for (const [x, z, tilt] of [
+    [-0.72, 0.68, -0.2],
+    [-0.72, -0.68, 0.18],
+    [0.72, -0.68, -0.3],
+]) {
+    const wheel = addPart(wheelGeo, wheelMat, x, -0.05, z, brokenRover)
+    wheel.rotation.x += tilt
+}
+
+const fallenWheelPosition = brokenRover.localToWorld(new THREE.Vector3(1.4, 0, -0.8))
+const fallenWheelGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.25, 20)
+const fallenWheel = addPart(
+    fallenWheelGeo,
+    wheelMat,
+    fallenWheelPosition.x,
+    getGroundHeight(fallenWheelPosition.x, fallenWheelPosition.z) + 0.13,
+    fallenWheelPosition.z,
+    scene
+)
+fallenWheel.rotation.y = 0.4
+
+addObstacle(-25, -58, 1.8)
+
+// Науковий модуль
+const researchStation = new THREE.Group()
+researchStation.scale.setScalar(2.2)
+researchStation.rotation.y = -Math.PI * 0.35
+researchStation.position.set(stationX, STATION_PAD_Y, stationZ)
+scene.add(researchStation)
+
+const stationHullPBR = loadPBRMaterial(`${textureBasePath}Metal061B_1K-JPG/Metal061B_1K-JPG_`, { repeatX: 6, repeatY: 3 })
+const stationHullMat = new THREE.MeshStandardMaterial({
+    map: stationHullPBR.map,
+    normalMap: stationHullPBR.normalMap,
+    roughnessMap: stationHullPBR.roughnessMap,
+    metalnessMap: stationHullPBR.metalnessMap,
+    color: 0xd8e2ec,
+    roughness: 0.45,
+    metalness: 0.5,
+})
+
+const stationWindowMat = new THREE.MeshStandardMaterial({
+    color: 0xffaa00,
+    emissive: 0xffaa00,
+    emissiveIntensity: 3,
+})
+
+const HEX_APOTHEM = Math.cos(Math.PI / 6)
+
+function addStationWindows(centerX, wallRadius, y, skipAngleDeg) {
+    const apothem = wallRadius * HEX_APOTHEM
+    for (let i = 0; i < 6; i++) {
+        const deg = 30 + 60 * i
+        if (deg === skipAngleDeg) continue
+        const angle = (deg * Math.PI) / 180
+        const dirX = Math.sin(angle)
+        const dirZ = Math.cos(angle)
+
+        const frame = addPart(
+            new THREE.BoxGeometry(1.15, 0.8, 0.14),
+            darkMetalMat,
+            centerX + dirX * (apothem + 0.04),
+            y,
+            dirZ * (apothem + 0.04),
+            researchStation
+        )
+        frame.rotation.y = angle
+
+        const pane = addPart(
+            new THREE.BoxGeometry(0.9, 0.55, 0.06),
+            stationWindowMat,
+            centerX + dirX * (apothem + 0.11),
+            y,
+            dirZ * (apothem + 0.11),
+            researchStation
+        )
+        pane.rotation.y = angle
+        pane.castShadow = false
     }
-`
-const godRayFragmentShader = `
-    uniform float uTime;
-    uniform float uIntensity;
-    uniform float uPhase;
-    uniform vec3 uColor;
-    varying vec2 vUv;
-    varying vec3 vN;
-    varying vec3 vV;
-    varying float vDist;
-    void main() {
-        float edge = pow(abs(dot(normalize(vN), normalize(vV))), 2.2);
-        float nearFade = smoothstep(5.0, 22.0, vDist);
-        float vert = pow(smoothstep(0.0, 1.0, vUv.y), 1.5);
-        float streak = 0.65 + 0.35
-            * sin(vUv.x * 6.28318 * 5.0 + uTime * 0.35 + uPhase)
-            * sin(vUv.x * 6.28318 * 3.0 - uTime * 0.22 + uPhase * 2.0);
-        gl_FragColor = vec4(uColor, edge * vert * streak * nearFade * uIntensity);
-    }
-`
+}
 
-function createGodRay({ x, z, radius, tilt, tiltX, phase }) {
-    const height = CONFIG.waterTop - CONFIG.floorY + 6
-    const group = new THREE.Group()
-    const layers = []
+function addHexModule({ x, baseRadius, wallRadius, wallHeight, roofRadius }) {
+    const baseH = 0.5
+    const roofH = 0.5
 
-    for (const layer of [
-        { scale: 1, strength: 0.28 },
-        { scale: 0.55, strength: 0.22 },
-    ]) {
-        const geometry = new THREE.CylinderGeometry(radius * layer.scale * 0.25, radius * layer.scale, height, 32, 1, true)
-        const material = new THREE.ShaderMaterial({
-            uniforms: {
-                uTime: { value: 0 },
-                uIntensity: { value: 0 },
-                uPhase: { value: phase },
-                uColor: { value: new THREE.Color(0x8fdcf2) },
-            },
-            vertexShader: godRayVertexShader,
-            fragmentShader: godRayFragmentShader,
+    addPart(new THREE.CylinderGeometry(baseRadius - 0.1, baseRadius - 0.1, 2, 6), darkMetalMat, x, -0.5, 0, researchStation)
+    addPart(new THREE.CylinderGeometry(baseRadius, baseRadius, baseH, 6), darkMetalMat, x, baseH / 2, 0, researchStation)
+
+    addPart(new THREE.CylinderGeometry(wallRadius, wallRadius, wallHeight, 6), stationHullMat, x, baseH + wallHeight / 2, 0, researchStation)
+
+    const beltR = wallRadius * 1.03
+    addPart(new THREE.CylinderGeometry(beltR, beltR, 0.18, 6), darkMetalMat, x, baseH + 0.09, 0, researchStation)
+    addPart(new THREE.CylinderGeometry(beltR, beltR, 0.22, 6), darkMetalMat, x, baseH + wallHeight - 0.11, 0, researchStation)
+
+    const roofY = baseH + wallHeight + roofH / 2
+    addPart(new THREE.CylinderGeometry(roofRadius, wallRadius, roofH, 6), stationHullMat, x, roofY, 0, researchStation)
+    addPart(new THREE.CylinderGeometry(roofRadius * 0.98, roofRadius * 0.98, 0.14, 6), darkMetalMat, x, baseH + wallHeight + roofH + 0.07, 0, researchStation)
+
+    return baseH + wallHeight + roofH + 0.14
+}
+
+const leftRoofY = addHexModule({ x: -6, baseRadius: 5.6, wallRadius: 5.0, wallHeight: 3.6, roofRadius: 3.7 })
+addStationWindows(-6, 5.0, 2.5, 90)
+
+const rightRoofY = addHexModule({ x: 6, baseRadius: 4.7, wallRadius: 4.0, wallHeight: 3.2, roofRadius: 2.9 })
+addStationWindows(6, 4.0, 2.3, 270)
+
+const solarPBR = loadPBRMaterial(`${import.meta.env.BASE_URL}Details/SolarPanel003_1K-JPG/SolarPanel003_1K-JPG_`, { repeatX: 2, repeatY: 1 })
+const solarPanelMat = new THREE.MeshStandardMaterial({
+    map: solarPBR.map,
+    normalMap: solarPBR.normalMap,
+    roughnessMap: solarPBR.roughnessMap,
+    metalnessMap: solarPBR.metalnessMap,
+    roughness: 0.25,
+    metalness: 0.8,
+})
+
+const canisterPBR = loadPBRMaterial(`${import.meta.env.BASE_URL}Details/Metal047A_1K-JPG/Metal047A_1K-JPG_`)
+const canisterMat = new THREE.MeshStandardMaterial({
+    map: canisterPBR.map,
+    normalMap: canisterPBR.normalMap,
+    roughnessMap: canisterPBR.roughnessMap,
+    metalnessMap: canisterPBR.metalnessMap,
+    color: 0xff6600,
+    roughness: 0.35,
+    metalness: 0.7,
+})
+
+const cratePBR = loadPBRMaterial(`${import.meta.env.BASE_URL}Details/Metal021_1K-JPG/Metal021_1K-JPG_`)
+const crateMat = new THREE.MeshStandardMaterial({
+    map: cratePBR.map,
+    normalMap: cratePBR.normalMap,
+    roughnessMap: cratePBR.roughnessMap,
+    metalnessMap: cratePBR.metalnessMap,
+    color: 0x8a99a6,
+    roughness: 0.45,
+    metalness: 0.6,
+})
+
+// Сонячна панель
+addPart(new THREE.CylinderGeometry(0.1, 0.14, 0.9, 8), darkMetalMat, 6, rightRoofY + 0.45, 0, researchStation)
+const solarPanel = addPart(
+    new THREE.BoxGeometry(3.2, 0.12, 2.0),
+    solarPanelMat,
+    6,
+    rightRoofY + 1.0,
+    0,
+    researchStation
+)
+solarPanel.rotation.set(-0.3, 0.25, 0)
+
+// Тунель між модулями
+addPart(new THREE.BoxGeometry(7.5, 2.9, 2.6), darkMetalMat, 0, 0.95, 0, researchStation)
+addPart(new THREE.BoxGeometry(2.4, 2.9, 1.4), darkMetalMat, 0, 0.95, 1.5, researchStation)
+
+// Двері
+const doorPBR = loadPBRMaterial(`${import.meta.env.BASE_URL}laboratory%20station/Metal044A_1K-JPG/Metal044A_1K-JPG_`, { repeatX: 1, repeatY: 1 })
+const doorMat = new THREE.MeshStandardMaterial({
+    map: doorPBR.map,
+    normalMap: doorPBR.normalMap,
+    roughnessMap: doorPBR.roughnessMap,
+    metalnessMap: doorPBR.metalnessMap,
+    color: 0xc8d4e0,
+    roughness: 0.35,
+    metalness: 0.75,
+})
+addPart(new THREE.BoxGeometry(1.4, 1.7, 0.1), doorMat, 0, 1.0, 2.23, researchStation)
+for (const x of [-0.8, 0.8]) {
+    addPart(new THREE.BoxGeometry(0.16, 1.95, 0.18), darkMetalMat, x, 1.05, 2.24, researchStation)
+}
+addPart(new THREE.BoxGeometry(1.75, 0.16, 0.18), darkMetalMat, 0, 2.03, 2.24, researchStation)
+
+const airlockLightMat = new THREE.MeshStandardMaterial({
+    color: 0x00e5ff,
+    emissive: 0x00e5ff,
+    emissiveIntensity: 3,
+})
+addPart(new THREE.BoxGeometry(0.9, 0.12, 0.08), airlockLightMat, 0, 2.22, 2.25, researchStation).castShadow = false
+const airlockLight = new THREE.PointLight(0x00e5ff, 25, 8)
+airlockLight.position.set(0, 2.5, 2.8)
+researchStation.add(airlockLight)
+
+addPart(new THREE.BoxGeometry(2.2, 0.16, 1.2), darkMetalMat, 0, 0.08, 2.8, researchStation)
+
+addPart(new THREE.CylinderGeometry(0.35, 0.45, 0.2, 8), darkMetalMat, -6, leftRoofY + 0.1, 0.8, researchStation)
+addPart(new THREE.CylinderGeometry(0.08, 0.12, 1.6, 6), darkMetalMat, -6, leftRoofY + 0.9, 0.8, researchStation)
+const dish = addPart(
+    new THREE.CylinderGeometry(0.2, 1.05, 0.22, 8),
+    darkMetalMat,
+    -6,
+    leftRoofY + 1.8,
+    0.8,
+    researchStation
+)
+dish.rotation.set(0.45, 0.2, 0)
+
+const CRATE_SIZE = 0.7
+for (const [x, z, rotation, level] of [
+    [-1.6, 3.7, 0.25, 0],
+    [-2.4, 3.9, -0.15, 0],
+    [-1.9, 3.75, 0.5, 1],
+    [1.7, 3.8, -0.3, 0],
+    [2.5, 3.6, 0.2, 0],
+    [0.2, 4.6, 0.1, 0],
+]) {
+    const crate = addPart(
+        new THREE.BoxGeometry(CRATE_SIZE, CRATE_SIZE, CRATE_SIZE),
+        crateMat,
+        x,
+        CRATE_SIZE / 2 + level * CRATE_SIZE,
+        z,
+        researchStation
+    )
+    crate.rotation.y = rotation
+}
+
+for (const [x, z] of [[-3.0, 5.2], [-3.7, 5.6], [3.0, 5.2], [3.7, 5.6]]) {
+    addPart(new THREE.CylinderGeometry(0.22, 0.22, 0.9, 10), canisterMat, x, 0.45, z, researchStation)
+    addPart(new THREE.CylinderGeometry(0.1, 0.12, 0.14, 8), darkMetalMat, x, 0.97, z, researchStation)
+}
+
+const stationLight = new THREE.PointLight(0xffaa44, 60, 30)
+stationLight.position.set(0, 3.5, 0)
+researchStation.add(stationLight)
+
+const angle = -Math.PI * 0.35
+const cosA = Math.cos(angle)
+const sinA = Math.sin(angle)
+addObstacle(stationX + (-6 * 2.2 * cosA), stationZ - (-6 * 2.2 * sinA), 11.5)
+addObstacle(stationX + (6 * 2.2 * cosA), stationZ - (6 * 2.2 * sinA), 9.5)
+addObstacle(stationX, stationZ, 6)
+
+// Метеорити
+const meteorGeo = new THREE.IcosahedronGeometry(1, 1)
+const meteors = []
+
+function spawnMeteor(target) {
+    const velocity = new THREE.Vector3(
+        -6 + (Math.random() - 0.5) * 2,
+        -14 + (Math.random() - 0.5) * 2,
+        -4 + (Math.random() - 0.5) * 2
+    )
+
+    const t = CONFIG.meteorFlightTime
+    const g = CONFIG.meteorGravity
+    const start = new THREE.Vector3(
+        target.x - velocity.x * t,
+        target.y - velocity.y * t + 0.5 * g * t * t,
+        target.z - velocity.z * t
+    )
+
+    const meteorPBR = loadPBRMaterial(`${import.meta.env.BASE_URL}meteorite/Rock035_1K-JPG/Rock035_1K-JPG_`, {
+        repeatX: 1,
+        repeatY: 1,
+        metalness: false,
+    })
+
+    const material = new THREE.MeshStandardMaterial({
+        map: meteorPBR.map,
+        normalMap: meteorPBR.normalMap,
+        roughnessMap: meteorPBR.roughnessMap,
+        color: 0x1c1921,
+        roughness: 0.95,
+        flatShading: true,
+        emissive: 0xff3300,
+        emissiveIntensity: 0.8,
+    })
+    const size = 0.6 + Math.random() * 0.5
+    const mesh = new THREE.Mesh(meteorGeo, material)
+    mesh.scale.set(
+        size * (0.8 + Math.random() * 0.4),
+        size * (0.7 + Math.random() * 0.5),
+        size * (0.8 + Math.random() * 0.4)
+    )
+    mesh.position.copy(start)
+    mesh.castShadow = true
+
+    const flame = new THREE.Mesh(
+        meteorGeo,
+        new THREE.MeshBasicMaterial({
+            color: 0xff7700,
             transparent: true,
+            opacity: 0.4,
             blending: THREE.AdditiveBlending,
             depthWrite: false,
-            side: THREE.DoubleSide,
             fog: false,
         })
-        group.add(new THREE.Mesh(geometry, material))
-        layers.push({ material, baseStrength: layer.strength })
-    }
-
-    group.position.set(x, CONFIG.waterTop + 3 - height / 2, z)
-    group.rotation.set(tiltX, 0, tilt)
-    scene.add(group)
-
-    godRays.push({ group, layers, phase, baseTilt: tilt, baseTiltX: tiltX })
-}
-
-createGodRay({ x: -12, z: -4, radius: 3.4, tilt: 0.14, tiltX: -0.06, phase: 0.0 })
-createGodRay({ x: -2, z: -10, radius: 4.4, tilt: 0.10, tiltX: -0.10, phase: 1.7 })
-createGodRay({ x: 10, z: 0, radius: 3.2, tilt: 0.16, tiltX: -0.04, phase: 3.1 })
-createGodRay({ x: -5, z: 6, radius: 2.6, tilt: 0.12, tiltX: -0.08, phase: 4.4 })
-createGodRay({ x: 15, z: -9, radius: 3.8, tilt: 0.18, tiltX: -0.05, phase: 5.2 })
-createGodRay({ x: 2, z: -20, radius: 5.0, tilt: 0.10, tiltX: -0.10, phase: 2.4 })
-
-function updateGodRays(t) {
-    for (const ray of godRays) {
-        const pulse = 0.65 + 0.35 * Math.sin(t * 0.7 + ray.phase)
-        for (const layer of ray.layers) {
-            layer.material.uniforms.uTime.value = t
-            layer.material.uniforms.uIntensity.value = layer.baseStrength * pulse * CONFIG.godRayIntensity
-        }
-        ray.group.rotation.z = ray.baseTilt + Math.sin(t * 0.25 + ray.phase) * 0.025
-        ray.group.rotation.x = ray.baseTiltX + Math.cos(t * 0.2 + ray.phase) * 0.015
-    }
-}
-
-
-// Медузи
-function createJellyfish({ color, scale, x, z, bottomY, topY, verticalSpeed, verticalPhase, withLight = false }) {
-    const group = new THREE.Group()
-
-    const bellMaterial = new THREE.MeshStandardMaterial({
-        color, emissive: color, emissiveIntensity: 0.9, transparent: true, opacity: 0.5,
-        roughness: 0.15, side: THREE.DoubleSide, depthWrite: false,
-    })
-    const innerMaterial = new THREE.MeshStandardMaterial({
-        color, emissive: color, emissiveIntensity: 1.8, transparent: true, opacity: 0.7, depthWrite: false,
-    })
-    const tentacleMaterial = new THREE.MeshStandardMaterial({
-        color, emissive: color, emissiveIntensity: 1.1, transparent: true, opacity: 0.6, depthWrite: false,
-    })
-
-    const bell = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 16, 0, Math.PI * 2, 0, Math.PI * 0.55), bellMaterial)
-    bell.scale.set(1, 0.75, 1)
-    group.add(bell)
-
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.985, 0.035, 8, 40), innerMaterial)
-    rim.rotation.x = Math.PI / 2
-    rim.position.y = Math.cos(Math.PI * 0.55)
-    bell.add(rim)
-
-    const innerCore = new THREE.Mesh(new THREE.SphereGeometry(0.35, 12, 10), innerMaterial)
-    innerCore.position.y = 0.2
-    group.add(innerCore)
-
-    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-        map: glowTexture, color, transparent: true, opacity: 0.45,
-        blending: THREE.AdditiveBlending, depthWrite: false,
-    }))
-    glow.scale.set(4.2, 4.2, 1)
-    glow.position.y = -0.1
-    group.add(glow)
-
-    const tentacles = []
-    const count = 7
-    for (let k = 0; k < count; k++) {
-        const angle = (k / count) * Math.PI * 2
-        const chain = createChain({ segments: 5, segLength: 0.55, radius: 0.05, material: tentacleMaterial, direction: -1 })
-        chain.root.position.set(Math.cos(angle) * 0.72, -0.1, Math.sin(angle) * 0.72)
-        group.add(chain.root)
-        tentacles.push({ segs: chain.segs, phase: k * 0.7 })
-    }
-
-    for (let k = 0; k < 2; k++) {
-        const angle = (k / 2) * Math.PI * 2
-        const chain = createChain({ segments: 6, segLength: 0.62, radius: 0.09, material: tentacleMaterial, direction: -1 })
-        chain.root.position.set(Math.cos(angle) * 0.2, -0.05, Math.sin(angle) * 0.2)
-        group.add(chain.root)
-        tentacles.push({ segs: chain.segs, phase: k * 1.9 + 0.5 })
-    }
-
-    // Точкове світло
-    if (withLight) {
-        const light = new THREE.PointLight(color, 25 * scale, 14 * scale, 2)
-        light.position.y = -0.3
-        group.add(light)
-    }
-
-    group.scale.setScalar(scale)
-    group.position.set(x, bottomY, z)
-    scene.add(group)
-
-    return {
-        group, bell, glow, tentacles, scale,
-        baseX: x, baseZ: z,
-        bottomY, topY,
-        verticalSpeed, verticalPhase,
-        driftRadius: THREE.MathUtils.randFloat(1.5, 3.2),
-        driftSpeed: THREE.MathUtils.randFloat(0.18, 0.35),
-        pulseSpeed: THREE.MathUtils.randFloat(1.6, 2.4),
-        pulsePhase: Math.random() * Math.PI * 2,
-    }
-}
-
-const JELLY_COLORS = [0xff40bb, 0x00f5d4, 0x9d4edd, 0x4cc9f0, 0xffb703, 0xff6b9d, 0x7cf29a]
-
-// Групи
-const jellyBlooms = [
-    { x: -9, z: 3, count: 4, spread: 5.5 },
-    { x: 11, z: -1, count: 4, spread: 5.5 },
-    { x: 1, z: -11, count: 3, spread: 6.5 },
-    { x: -2, z: 9, count: 2, spread: 3.5 },
-]
-
-const jellyfishes = []
-
-function spawnJelly(x, z, big = false) {
-    const bottomY = THREE.MathUtils.randFloat(-4, -0.5)
-    jellyfishes.push(createJellyfish({
-        color: JELLY_COLORS[Math.floor(Math.random() * JELLY_COLORS.length)],
-        scale: big ? THREE.MathUtils.randFloat(0.9, 1.25) : THREE.MathUtils.randFloat(0.5, 0.85),
-        x, z,
-        bottomY,
-        topY: bottomY + THREE.MathUtils.randFloat(4, 8),
-        verticalSpeed: THREE.MathUtils.randFloat(0.15, 0.32),
-        verticalPhase: Math.random() * Math.PI * 2,
-        withLight: jellyfishes.length % 4 === 0,
-    }))
-}
-
-for (const bloom of jellyBlooms) {
-    for (let i = 0; i < bloom.count; i++) {
-        const angle = Math.random() * Math.PI * 2
-        const dist = Math.sqrt(Math.random()) * bloom.spread
-        spawnJelly(bloom.x + Math.cos(angle) * dist, bloom.z + Math.sin(angle) * dist)
-    }
-}
-for (let i = 0; i < 3; i++) {
-    spawnJelly(THREE.MathUtils.randFloatSpread(36), THREE.MathUtils.randFloat(-14, 12), true)
-}
-
-function updateJellyfish(t) {
-    const s = CONFIG.currentStrength
-    for (const j of jellyfishes) {
-        const driftX = j.baseX
-            + Math.sin(t * j.driftSpeed + j.verticalPhase) * j.driftRadius
-            + Math.sin(t * 0.13 + j.pulsePhase) * 1.5
-        const driftZ = j.baseZ + Math.cos(t * j.driftSpeed * 0.8 + j.verticalPhase) * j.driftRadius
-
-        const progress = (Math.sin(t * j.verticalSpeed + j.verticalPhase) + 1) / 2
-        const rawY = THREE.MathUtils.lerp(j.bottomY, j.topY, progress)
-        const minSafeY = groundY(driftX, driftZ) + 1 + 4.6 * j.scale
-        const pulseRaw = Math.sin(t * j.pulseSpeed + j.pulsePhase)
-        const pulse = Math.pow((pulseRaw + 1) / 2, 2)
-
-        j.group.position.set(driftX, Math.max(minSafeY, rawY) + pulse * 0.25 * j.scale, driftZ)
-        j.group.rotation.x = Math.sin(t * 0.4 + j.pulsePhase) * 0.1
-        j.group.rotation.z = Math.cos(t * 0.33 + j.pulsePhase) * 0.1
-
-        j.bell.scale.set(1 - pulse * 0.12, 0.75 + pulse * 0.2, 1 - pulse * 0.12)
-        j.glow.material.opacity = 0.3 + pulse * 0.25
-
-        for (const tentacle of j.tentacles) {
-            for (let i = 0; i < tentacle.segs.length; i++) {
-                const a = t * 1.8 + tentacle.phase + i * 0.6
-                tentacle.segs[i].rotation.x = Math.sin(a) * 0.25 * s
-                tentacle.segs[i].rotation.z = Math.cos(a * 0.85) * 0.25 * s
-            }
-        }
-    }
-}
-
-
-// Бульбашки
-const bubbleGeometry = new THREE.SphereGeometry(1, 10, 10)
-const bubbleMaterial = new THREE.MeshStandardMaterial({
-    color: 0xbfefff, emissive: 0x7fcfff, emissiveIntensity: 0.25, transparent: true, opacity: 0.35, roughness: 0.1, depthWrite: false
-})
-const bubbles = []
-
-function resetBubble(b, randomHeight) {
-    if (b.fromChest) {
-        b.x = chestMouth.x + THREE.MathUtils.randFloatSpread(0.8)
-        b.z = chestMouth.z + THREE.MathUtils.randFloatSpread(0.6)
-        b.startY = chestMouth.y
-    } else {
-        b.x = THREE.MathUtils.randFloatSpread(CONFIG.boundsXZ * 2)
-        b.z = THREE.MathUtils.randFloatSpread(CONFIG.boundsXZ * 2)
-        b.startY = groundY(b.x, b.z) + 0.2
-    }
-    b.y = randomHeight ? THREE.MathUtils.lerp(b.startY, CONFIG.waterTop, Math.random()) : b.startY
-}
-
-for (let i = 0; i < CONFIG.bubbleCount; i++) {
-    const mesh = new THREE.Mesh(bubbleGeometry, bubbleMaterial)
-    const size = THREE.MathUtils.randFloat(0.05, 0.17)
-    mesh.scale.setScalar(size)
-    scene.add(mesh)
-
-    const bubble = {
-        mesh, fromChest: i < Math.floor(CONFIG.bubbleCount * 0.4), speed: 0.6 + size * 7,
-        phase: Math.random() * Math.PI * 2, x: 0, y: 0, z: 0, startY: 0,
-    }
-    resetBubble(bubble, true)
-    bubbles.push(bubble)
-}
-
-function updateBubbles(dt, t) {
-    for (const b of bubbles) {
-        b.y += b.speed * dt
-        if (b.y > CONFIG.waterTop) resetBubble(b, false)
-        b.mesh.position.set(b.x + Math.sin(t * 1.5 + b.phase) * 0.15, b.y, b.z + Math.cos(t * 1.2 + b.phase) * 0.15)
-    }
-}
-
-// Рибки
-function loadFishTextureMaps(basePath, files, repeat = 2) {
-    return {
-        map: loadPbrTexture(textureLoader, `${basePath}_${files.color}`, { color: true, repeat }),
-        normalMap: loadPbrTexture(textureLoader, `${basePath}_${files.normal}`, { repeat }),
-        roughnessMap: loadPbrTexture(textureLoader, `${basePath}_${files.roughness}`, { repeat }),
-    }
-}
-
-const fishTextureMaps = {
-    redPlastic: loadFishTextureMaps(
-        './fish/plastic_0002_1k_UBw2zj/plastic_0002',
-        { color: 'color_1k.jpg', normal: 'normal_opengl_1k.png', roughness: 'roughness_1k.jpg' }
-    ),
-    leather038: loadFishTextureMaps(
-        './fish/Leather038_1K-JPG/Leather038_1K-JPG',
-        { color: 'Color.jpg', normal: 'NormalGL.jpg', roughness: 'Roughness.jpg' }
-    ),
-    leather035D: loadFishTextureMaps(
-        './fish/Leather035D_1K-JPG/Leather035D_1K-JPG',
-        { color: 'Color.jpg', normal: 'NormalGL.jpg', roughness: 'Roughness.jpg' }
-    ),
-    biStretch: loadPbrMaps('./fish/bi_stretch_1k.blend', 'bi_stretch', 'exr', 2),
-}
-
-function createProceduralFishMesh(speciesId) {
-    const fishGroup = new THREE.Group();
-
-    const speciesConfigs = [
-        // перша рибка
-        {
-            body: 0xff1a00,
-            belly: 0xf2a5a0,
-            fin: 0xa91e24,
-            pattern: 0xffffff,
-            bodyMaps: fishTextureMaps.redPlastic,
-            finMaps: fishTextureMaps.redPlastic,
-            type: "red"
-        },
-        // Риба клоун
-        {
-            body: 0xff8738,
-            belly: 0xffd6a0,
-            fin: 0xf15b35,
-            pattern: 0xffffff,
-            bodyMaps: fishTextureMaps.leather038,
-            patternMaps: fishTextureMaps.leather035D,
-            type: "orange"
-        },
-        // жовта рибка
-        {
-            body: 0xffd447,
-            belly: 0xfff0a3,
-            fin: 0xffa51e,
-            pattern: 0xf28c28,
-            bodyMaps: fishTextureMaps.biStretch,
-            bellyMaps: fishTextureMaps.biStretch,
-            finMaps: fishTextureMaps.biStretch,
-            type: "yellow"
-        },
-        // ще одна риба
-        {
-            body: 0xa45be8,
-            belly: 0xe5b8ff,
-            fin: 0x7740bd,
-            pattern: 0xffd45c,
-            type: "purple"
-        }
-    ];
-
-    const cfg = speciesConfigs[
-        Math.abs(speciesId) % speciesConfigs.length
-    ];
-
-    const material = (color, roughness = 0.42, maps = null) =>
-        new THREE.MeshStandardMaterial({
-            color,
-            roughness,
-            metalness: 0,
-            side: THREE.DoubleSide,
-            ...(maps || {}),
-        });
-
-    const bodyMat = material(cfg.body, 0.34, cfg.bodyMaps);
-    const bellyMat = material(cfg.belly, 0.42, cfg.bellyMaps);
-    const finMat = material(cfg.fin, 0.38, cfg.finMaps);
-    const patternMat = material(cfg.pattern, 0.35, cfg.patternMaps);
-    const whiteMat = material(0xffffff, 0.2);
-    const pupilMat = material(0x17202b, 0.18);
-    const mouthMat = material(0x713a38);
-
-    function addEllipsoid(parent, mat, position, scale, segments = 20) {
-        const mesh = new THREE.Mesh(
-            new THREE.SphereGeometry(1, segments, 16),
-            mat
-        );
-
-        mesh.position.set(...position);
-        mesh.scale.set(...scale);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-
-        parent.add(mesh);
-        return mesh;
-    }
-
-
-    const isSlim = cfg.type === "yellow";
-    const bodyScale = isSlim ? [0.175, 0.28, 0.50] : [0.21, 0.28, 0.50];
-    const bellyScale = isSlim ? [0.14, 0.14, 0.38] : [0.17, 0.14, 0.38];
-
-    addEllipsoid(
-        fishGroup,
-        bodyMat,
-        [0, 0, 0],
-        bodyScale,
-        32
-    );
-
-    addEllipsoid(
-        fishGroup,
-        bellyMat,
-        [0, -0.105, 0.025],
-        bellyScale,
-        24
-    );
-
-    const tailPivot = new THREE.Group();
-    tailPivot.position.set(0, 0, -0.42);
-
-    const tailShape = new THREE.Shape();
-    tailShape.moveTo(0, 0);
-    tailShape.quadraticCurveTo(0.1, 0.18, 0.35, 0.28);
-    tailShape.quadraticCurveTo(0.22, 0.0, 0.35, -0.28);
-    tailShape.quadraticCurveTo(0.1, -0.18, 0, 0);
-    tailShape.closePath();
-
-    const tail = new THREE.Mesh(
-        new THREE.ShapeGeometry(tailShape, 16),
-        finMat
-    );
-
-    tail.rotation.y = Math.PI / 2;
-    tail.position.z = -0.01;
-    tailPivot.add(tail);
-    fishGroup.add(tailPivot);
-
-
-    const dorsalShape = new THREE.Shape();
-    dorsalShape.moveTo(-0.24, 0);
-    dorsalShape.quadraticCurveTo(-0.20, 0.17, -0.08, 0.205);
-    dorsalShape.quadraticCurveTo(0.015, 0.215, 0.10, 0.12);
-    dorsalShape.quadraticCurveTo(0.18, 0.075, 0.24, 0);
-    dorsalShape.closePath();
-
-    const dorsalFin = new THREE.Mesh(
-        new THREE.ShapeGeometry(dorsalShape, 12),
-        finMat
-    );
-
-    dorsalFin.rotation.y = Math.PI / 2;
-    dorsalFin.position.set(0, 0.23, -0.035);
-    fishGroup.add(dorsalFin);
-
-    const bottomShape = new THREE.Shape();
-    bottomShape.moveTo(-0.14, 0);
-    bottomShape.quadraticCurveTo(0, -0.12, 0.14, 0);
-    bottomShape.quadraticCurveTo(0, -0.055, -0.14, 0);
-    bottomShape.closePath();
-
-    const bottomFin = new THREE.Mesh(
-        new THREE.ShapeGeometry(bottomShape, 10),
-        finMat
-    );
-
-    bottomFin.rotation.y = Math.PI / 2;
-    bottomFin.position.set(0, -0.23, -0.12);
-    fishGroup.add(bottomFin);
-
-
-    const pectoralFins = [];
-    const pectoralX = isSlim ? 0.15 : 0.18;
-
-    for (const side of [-1, 1]) {
-        const finGroup = new THREE.Group();
-
-        const pectoralShape = new THREE.Shape();
-        pectoralShape.moveTo(0, 0.055);
-        pectoralShape.quadraticCurveTo(0.17, 0.10, 0.205, -0.015);
-        pectoralShape.quadraticCurveTo(0.12, -0.13, 0.015, -0.09);
-        pectoralShape.quadraticCurveTo(-0.025, -0.015, 0, 0.055);
-
-        const pectoralFin = new THREE.Mesh(
-            new THREE.ShapeGeometry(pectoralShape, 12),
-            finMat
-        );
-
-        pectoralFin.rotation.y = side * 0.45;
-        finGroup.add(pectoralFin);
-
-        finGroup.position.set(
-            side * pectoralX,
-            -0.025,
-            0.015
-        );
-
-        fishGroup.add(finGroup);
-        pectoralFins.push(finGroup);
-    }
-
-    const eyeX = isSlim ? 0.145 : 0.17;
-
-    for (const side of [-1, 1]) {
-        const eyeGroup = new THREE.Group();
-
-        // Біла основа ока
-        addEllipsoid(
-            eyeGroup,
-            whiteMat,
-            [0, 0, 0],
-            [0.071, 0.075, 0.045],
-            20
-        );
-
-        // Зіниця
-        addEllipsoid(
-            eyeGroup,
-            pupilMat,
-            [side * 0.008, 0.004, 0.036],
-            [0.042, 0.047, 0.022],
-            16
-        );
-
-        addEllipsoid(
-            eyeGroup,
-            whiteMat,
-            [side * 0.012 - 0.012, 0.022, 0.055],
-            [0.014, 0.015, 0.009],
-            10
-        );
-
-        eyeGroup.position.set(
-            side * eyeX,
-            0.065,
-            0.275
-        );
-
-        eyeGroup.rotation.y = side * 0.35;
-
-        fishGroup.add(eyeGroup);
-    }
-
-
-    addEllipsoid(
-        fishGroup,
-        mouthMat,
-        [0, -0.005, 0.522],
-        [0.045, 0.018, 0.012],
-        12
-    );
-
-
-    if (cfg.type === "orange") {
-        for (const z of [-0.245, -0.045, 0.15]) {
-            const stripe = addEllipsoid(
-                fishGroup,
-                patternMat,
-                [0, 0.008, z],
-                [0.22, 0.285, 0.038],
-                24
-            );
-            stripe.scale.z = 0.038;
-        }
-    }
-
-    if (cfg.type === "red") {
-        addEllipsoid(
-            tailPivot,
-            patternMat,
-            [0, 0, -0.15],
-            [0.03, 0.18, 0.08],
-            16
-        );
-
-        addEllipsoid(
-            fishGroup,
-            patternMat,
-            [0, 0.21, -0.035],
-            [0.12, 0.025, 0.30],
-            20
-        );
-    }
-
-    if (cfg.type === "yellow") {
-        for (const [x, y, z] of [
-            [-0.09, 0.09, 0.12],
-            [0.09, 0.09, 0.12],
-            [-0.09, 0.08, -0.10],
-            [0.09, 0.08, -0.10]
-        ]) {
-            addEllipsoid(
-                fishGroup,
-                patternMat,
-                [x, y, z],
-                [0.045, 0.035, 0.045],
-                12
-            );
-        }
-    }
-
-    if (cfg.type === "purple") {
-        addEllipsoid(
-            fishGroup,
-            patternMat,
-            [0, 0.22, -0.22],
-            [0.10, 0.025, 0.11],
-            16
-        );
-    }
-
-    fishGroup.userData.tailPivot = tailPivot;
-    fishGroup.userData.pectoralFins = pectoralFins;
-
-    return fishGroup;
-}
-
-const fishes = []
-
-function createFish(index) {
-    const groupId = index % 4
-    const mesh = createProceduralFishMesh(groupId)
-
-    const half = CONFIG.boundsXZ
-    const position = new THREE.Vector3(
-        THREE.MathUtils.randFloatSpread(half * 1.2),
-        THREE.MathUtils.randFloat(-6, 5),
-        THREE.MathUtils.randFloatSpread(half * 1.2)
     )
-    const velocity = new THREE.Vector3(
-        THREE.MathUtils.randFloatSpread(2),
-        THREE.MathUtils.randFloatSpread(0.5),
-        THREE.MathUtils.randFloatSpread(2)
-    ).setLength(CONFIG.minSpeed + 1)
-
-    mesh.position.copy(position)
+    flame.scale.setScalar(1.35)
+    mesh.add(flame)
     scene.add(mesh)
 
-    return {
+    meteors.push({
         mesh,
-        position,
+        flame,
         velocity,
-        groupId,
-        tailPhase: Math.random() * Math.PI * 2,
-    }
-}
-
-for (let i = 0; i < CONFIG.fishCount; i++) {
-    fishes.push(createFish(i))
-}
-
-
-// Їжа
-const foodGeometry = new THREE.SphereGeometry(0.12, 10, 10)
-const foodMaterial = new THREE.MeshStandardMaterial({ color: 0xfff0a8, emissive: 0xffd24d, emissiveIntensity: 0.6 })
-let foodPellets = []
-
-function spawnFood(point) {
-    for (let k = 0; k < 4; k++) {
-        const mesh = new THREE.Mesh(foodGeometry, foodMaterial)
-        const offset = new THREE.Vector3(
-            THREE.MathUtils.randFloatSpread(0.8),
-            THREE.MathUtils.randFloat(0, 0.4),
-            THREE.MathUtils.randFloatSpread(0.8)
-        )
-        mesh.position.copy(point).add(offset)
-        scene.add(mesh)
-
-        foodPellets.push({
-            mesh,
-            position: mesh.position,
-            landed: false,
-            landedAt: 0,
-            eaten: false
-        })
-    }
-}
-
-function updateFood(dt, elapsed) {
-    for (const food of foodPellets) {
-        if (!food.landed) {
-            food.position.y -= CONFIG.foodFallSpeed * dt
-            const ground = groundY(food.position.x, food.position.z) + 0.1
-            if (food.position.y <= ground) {
-                food.position.y = ground
-                food.landed = true
-                food.landedAt = elapsed
-            }
-        } else if (elapsed - food.landedAt > CONFIG.foodLifetimeOnFloor) {
-            food.eaten = true
-        }
-    }
-
-    foodPellets = foodPellets.filter((food) => {
-        if (food.eaten) scene.remove(food.mesh)
-        return !food.eaten
+        radius: size * 0.9,
+        spin: new THREE.Vector3(Math.random() * 4 - 2, Math.random() * 4 - 2, Math.random() * 4 - 2),
+        landed: false,
+        heat: 1,
     })
+
+    if (meteors.length > CONFIG.maxMeteors) removeMeteor(meteors[0])
 }
 
-const _alignment = new THREE.Vector3()
-const _cohesion = new THREE.Vector3()
-const _separation = new THREE.Vector3()
-const _steer = new THREE.Vector3()
-const _tmp = new THREE.Vector3()
-const _accel = new THREE.Vector3()
-
-function steerTowards(direction, velocity, maxSpeed, out) {
-    if (direction.lengthSq() < 0.00001) return out.set(0, 0, 0)
-    return out.copy(direction).setLength(maxSpeed).sub(velocity).clampLength(0, CONFIG.maxForce)
+function removeMeteor(meteor) {
+    scene.remove(meteor.mesh)
+    meteor.mesh.material.dispose()
+    meteor.flame.material.dispose()
+    meteors.splice(meteors.indexOf(meteor), 1)
 }
 
-function updateBoids(dt, elapsed) {
-    const bound = CONFIG.boundsXZ
+function clearMeteors() {
+    while (meteors.length > 0) removeMeteor(meteors[0])
+}
 
-    for (let i = 0; i < fishes.length; i++) {
-        const fish = fishes[i]
+function dropRandomMeteor() {
+    const x = rover.position.x + (Math.random() - 0.5) * 30
+    const z = rover.position.z + (Math.random() - 0.5) * 30
+    spawnMeteor(new THREE.Vector3(x, getGroundHeight(x, z), z))
+}
 
-        _alignment.set(0, 0, 0)
-        _cohesion.set(0, 0, 0)
-        _separation.set(0, 0, 0)
-        _accel.set(0, 0, 0)
+function updateMeteors(dt) {
+    for (const meteor of meteors) {
+        if (!meteor.landed) {
+            meteor.velocity.y -= CONFIG.meteorGravity * dt
+            meteor.mesh.position.addScaledVector(meteor.velocity, dt)
 
-        let sameGroupNeighbours = 0
+            // Обертання в польоті
+            meteor.mesh.rotation.x += meteor.spin.x * dt
+            meteor.mesh.rotation.y += meteor.spin.y * dt
+            meteor.mesh.rotation.z += meteor.spin.z * dt
 
-        for (let j = 0; j < fishes.length; j++) {
-            if (i === j) continue
-            const other = fishes[j]
-            const dist = fish.position.distanceTo(other.position)
-
-            if (dist < CONFIG.separationDist && dist > 0.0001) {
-                _tmp.subVectors(fish.position, other.position).divideScalar(dist * dist)
-                _separation.add(_tmp)
+            // Зіткнення із землею
+            const groundY = getGroundHeight(meteor.mesh.position.x, meteor.mesh.position.z)
+            if (meteor.mesh.position.y - meteor.radius <= groundY) {
+                meteor.landed = true
+                meteor.velocity.set(0, 0, 0)
+                meteor.mesh.position.y = groundY + meteor.radius * 0.4
+                meteor.flame.visible = false
             }
-
-            if (other.groupId === fish.groupId && dist < CONFIG.perception) {
-                _alignment.add(other.velocity)
-                _cohesion.add(other.position)
-                sameGroupNeighbours++
-            }
-        }
-
-        let maxSpeed = CONFIG.maxSpeed
-
-        if (sameGroupNeighbours > 0) {
-            _alignment.divideScalar(sameGroupNeighbours)
-            steerTowards(_alignment, fish.velocity, maxSpeed, _steer)
-            _accel.addScaledVector(_steer, CONFIG.wAlignment)
-
-            _cohesion.divideScalar(sameGroupNeighbours).sub(fish.position)
-            steerTowards(_cohesion, fish.velocity, maxSpeed, _steer)
-            _accel.addScaledVector(_steer, CONFIG.wCohesion)
-        }
-
-        if (_separation.lengthSq() > 0) {
-            steerTowards(_separation, fish.velocity, maxSpeed, _steer)
-            _accel.addScaledVector(_steer, CONFIG.wSeparation)
-        }
-
-        let nearestFood = null
-        let nearestDist = CONFIG.foodSeekRadius
-
-        for (const food of foodPellets) {
-            if (food.eaten) continue
-            const d = fish.position.distanceTo(food.position)
-            if (d < nearestDist) {
-                nearestDist = d
-                nearestFood = food
-            }
-        }
-
-        if (nearestFood) {
-            maxSpeed = CONFIG.maxSpeed * 1.5
-            _tmp.subVectors(nearestFood.position, fish.position)
-            steerTowards(_tmp, fish.velocity, maxSpeed, _steer)
-            _accel.addScaledVector(_steer, CONFIG.wFood)
-
-            if (nearestDist < CONFIG.foodEatDistance) {
-                nearestFood.eaten = true
-            }
-        }
-
-        const turn = 8
-        const p = fish.position
-        if (p.x > bound) _accel.x -= turn
-        if (p.x < -bound) _accel.x += turn
-        if (p.z > bound) _accel.z -= turn
-        if (p.z < -bound) _accel.z += turn
-        if (p.y > CONFIG.waterTop - 1) _accel.y -= turn
-        if (!nearestFood && p.y < groundY(p.x, p.z) + 3) _accel.y += turn
-
-        fish.velocity.addScaledVector(_accel, dt)
-        fish.velocity.clampLength(CONFIG.minSpeed, maxSpeed)
-        fish.position.addScaledVector(fish.velocity, dt)
-
-        const minY = groundY(p.x, p.z) + 0.5
-        if (p.y < minY) {
-            p.y = minY
-            if (fish.velocity.y < 0) fish.velocity.y = 0
-        }
-
-        fish.mesh.position.copy(p)
-        _tmp.copy(p).add(fish.velocity)
-        fish.mesh.lookAt(_tmp)
-
-        const tailPivot = fish.mesh.userData.tailPivot
-        if (tailPivot) {
-            const wag = Math.sin(elapsed * (2.8 + fish.velocity.length() * 0.9) + fish.tailPhase)
-            tailPivot.rotation.y = wag * 0.35
+        } else {
+            meteor.heat = Math.max(0, meteor.heat - dt * 0.25)
+            meteor.mesh.material.emissiveIntensity = 0.3 + meteor.heat * 1.5
         }
     }
 }
 
-
-//Інтерактив: Клік по воді
-
+// Клік мишкою
 const raycaster = new THREE.Raycaster()
 const pointer = new THREE.Vector2()
-let pointerDownX = 0, pointerDownY = 0
+let pointerDownX = 0
+let pointerDownY = 0
 
 canvas.addEventListener('pointerdown', (e) => {
     pointerDownX = e.clientX
@@ -1840,49 +1696,48 @@ canvas.addEventListener('pointerdown', (e) => {
 
 canvas.addEventListener('pointerup', (e) => {
     if (Math.hypot(e.clientX - pointerDownX, e.clientY - pointerDownY) > 5) return
-
     pointer.x = (e.clientX / sizes.width) * 2 - 1
     pointer.y = -(e.clientY / sizes.height) * 2 + 1
     raycaster.setFromCamera(pointer, camera)
 
-    const spawnPoint = new THREE.Vector3()
-    const hits = raycaster.intersectObject(floor)
-
-    if (hits.length > 0) {
-        spawnPoint.copy(hits[0].point)
-        spawnPoint.y = Math.min(spawnPoint.y + 12, CONFIG.waterTop)
-    } else {
-        raycaster.ray.at(18, spawnPoint)
-        spawnPoint.y = Math.min(spawnPoint.y, CONFIG.waterTop)
-    }
-
-    spawnFood(spawnPoint)
+    const hits = raycaster.intersectObject(ground)
+    if (hits.length > 0) spawnMeteor(hits[0].point)
 })
 
 const gui = new GUI({ title: 'Панель керування' })
 
-const envFolder = gui.addFolder('Вода та атмосфера')
-envFolder.add(CONFIG, 'fogDensity', 0, 0.1, 0.001).name('Густина туману').onChange((v) => scene.fog.density = v)
-envFolder.addColor(CONFIG, 'waterColor').name('Колір води').onChange((v) => {
-    scene.background.set(v)
-    scene.fog.color.set(v)
-    skyUniforms.uHorizon.value.set(v)
+gui.add({ hint: 'WASD / стрілки' }, 'hint').name('Керування ровером').disable()
+gui.add(CONFIG, 'roverSpeed', 0, 15, 0.5).name('Швидкість ровера')
+gui.add(CONFIG, 'fogDensity', 0, 0.04, 0.001).name('Густина туману').onChange((v) => {
+    scene.fog.density = v
 })
-envFolder.add(CONFIG, 'currentStrength', 0, 3, 0.05).name('Сила течії')
-envFolder.add(CONFIG, 'godRayIntensity', 0, 3, 0.05).name('Промені світла')
-envFolder.add(CONFIG, 'causticStrength', 0, 3, 0.05).name('Каустика').onChange((v) => causticUniforms.uStrength.value = v)
-envFolder.add(renderer, 'toneMappingExposure', 0.5, 2, 0.05).name('Експозиція')
 
-const speedFolder = gui.addFolder('Рибки: швидкість')
-speedFolder.add(CONFIG, 'minSpeed', 0.2, 6, 0.1).name('Мін. швидкість')
-speedFolder.add(CONFIG, 'maxSpeed', 1, 12, 0.1).name('Макс. швидкість')
+gui.add(CONFIG, 'crystalGlow', 0, 4, 0.05).name('Яскравість кристалів').onChange((v) => {
+    crystalUniforms.uGlow.value = v
+})
 
-const boidsFolder = gui.addFolder('Boids: ваги правил')
-boidsFolder.add(CONFIG, 'wSeparation', 0, 5, 0.05).name('Розділення')
-boidsFolder.add(CONFIG, 'wAlignment', 0, 5, 0.05).name('Вирівнювання')
-boidsFolder.add(CONFIG, 'wCohesion', 0, 5, 0.05).name('Зближення')
-boidsFolder.add(CONFIG, 'wFood', 0, 10, 0.1).name('Потяг до їжі')
+gui.add(CONFIG, 'followRover')
+    .name('Камера слідує за ровером')
+    .onChange((enabled) => {
+        if (enabled) {
+            const offset = controls.target.clone().sub(rover.position)
+            controls.target.copy(rover.position)
+            camera.position.sub(offset)
+        }
+    })
 
+function copyCameraPose() {
+    const f = (v) => v.toFixed(1)
+    const p = camera.position
+    const t = controls.target
+    const text = `camera.position.set(${f(p.x)}, ${f(p.y)}, ${f(p.z)})\ncontrols.target.set(${f(t.x)}, ${f(t.y)}, ${f(t.z)})`
+    console.log(text)
+    if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {})
+}
+gui.add({ copyCameraPose }, 'copyCameraPose').name('Копіювати ракурс камери')
+
+gui.add({ dropRandomMeteor }, 'dropRandomMeteor').name('Скинути метеорит')
+gui.add({ clearMeteors }, 'clearMeteors').name('Прибрати метеорити')
 
 window.addEventListener('resize', () => {
     sizes.width = window.innerWidth
@@ -1891,8 +1746,8 @@ window.addEventListener('resize', () => {
     camera.updateProjectionMatrix()
     renderer.setSize(sizes.width, sizes.height)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    composer.setSize(sizes.width, sizes.height)
 })
-
 
 const clock = new THREE.Clock()
 
@@ -1900,26 +1755,20 @@ function animate() {
     const dt = Math.min(clock.getDelta(), 0.05)
     const elapsed = clock.elapsedTime
 
-    updateFood(dt, elapsed)
-    updateBoids(dt, elapsed)
-
-    updateKelp(elapsed)
-    updateJellyfish(elapsed)
-    updateChest(elapsed)
-    for (const sail of shipSails) {
-        sail.rotation.y = Math.PI / 2 + Math.sin(elapsed * 1.2) * 0.08 * CONFIG.currentStrength
-        sail.rotation.z = Math.cos(elapsed * 0.9) * 0.05 * CONFIG.currentStrength
-    }
-    updateBubbles(dt, elapsed)
-    updateGodRays(elapsed)
-    plankton.update(dt, elapsed)
-
-    causticUniforms.uTime.value = elapsed
-    sunLight.intensity = 2.5 + Math.sin(elapsed * 0.8) * 0.15
-    sky.position.copy(camera.position)
-
+    shipLight.intensity = 100 + Math.sin(elapsed * 1.2) * 15
+    tealGlowMat.emissiveIntensity = 2.0 + Math.sin(elapsed * 1.2) * 0.2
+    updateRover(dt)
+    updateCameraFollow()
+    updateMoonLight()
+    updateSparks(dt)
+    updateRoverDust(dt)
+    updateMeteors(dt)
+    updateMonolith(dt)
+    updateGrass(elapsed)
+    updateFloatingDust(elapsed)
+    crystalUniforms.uTime.value = elapsed
     controls.update()
-    renderer.render(scene, camera)
+    composer.render()
     requestAnimationFrame(animate)
 }
 
